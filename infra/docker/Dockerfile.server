@@ -1,0 +1,47 @@
+# Multi-stage build for the FlowForge C++ API server.
+#
+# Builder stage compiles with clang + Ninja (matching local development --
+# see docs/development for why clang was chosen) and fetches third-party
+# dependencies via CMake FetchContent at build time, so this image needs
+# network access during `docker build` (not at runtime). The final image
+# contains only the built binary and its runtime shared-library
+# dependencies, not a compiler toolchain.
+
+FROM debian:bookworm-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang \
+        cmake \
+        ninja-build \
+        git \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY CMakeLists.txt .
+COPY cmake ./cmake
+COPY engine ./engine
+COPY apps/server ./apps/server
+COPY benchmarks ./benchmarks
+
+RUN cmake -B build -G Ninja \
+        -DCMAKE_CXX_COMPILER=clang++ \
+        -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DFLOWFORGE_BUILD_TESTS=OFF \
+        -DFLOWFORGE_BUILD_BENCHMARKS=OFF \
+    && cmake --build build --target flowforge_server -j
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --create-home --shell /usr/sbin/nologin flowforge
+
+COPY --from=builder /src/build/apps/server/flowforge_server /usr/local/bin/flowforge_server
+
+USER flowforge
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/flowforge_server"]

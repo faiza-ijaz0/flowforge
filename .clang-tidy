@@ -1,0 +1,20 @@
+---
+# Enabled via -DFLOWFORGE_ENABLE_CLANG_TIDY=ON (see cmake/StaticAnalysis.cmake).
+# Scope kept to correctness/modernization/performance checks that are
+# high-signal for a concurrent C++ engine; broad stylistic check groups
+# (readability-*, google-*) are left off to avoid duplicating what
+# .clang-format already enforces mechanically.
+Checks: >
+  -*,
+  bugprone-*,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-special-member-functions,
+  modernize-*,
+  performance-*,
+  concurrency-*,
+  -modernize-use-trailing-return-type,
+  -bugprone-easily-swappable-parameters
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '(engine|apps/server)/(include|src)/.*'
+FormatStyle: file

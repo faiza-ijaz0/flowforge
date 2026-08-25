@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flowforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowforge}
+      POSTGRES_DB: ${POSTGRES_DB:-flowforge}
+    ports:
+      - "5432:5432"
+    volumes:
+      - flowforge_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flowforge} -d ${POSTGRES_DB:-flowforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FLOWFORGE_ENV: ${FLOWFORGE_ENV:-development}
+      FLOWFORGE_SERVER_HOST: 0.0.0.0
+      FLOWFORGE_SERVER_PORT: 8080
+      FLOWFORGE_DATABASE_URL: postgres://${POSTGRES_USER:-flowforge}:${POSTGRES_PASSWORD:-flowforge}@postgres:5432/${POSTGRES_DB:-flowforge}
+      FLOWFORGE_WORKER_COUNT: ${FLOWFORGE_WORKER_COUNT:-4}
+      FLOWFORGE_LOG_LEVEL: ${FLOWFORGE_LOG_LEVEL:-info}
+      FLOWFORGE_STRUCTURED_LOGGING: "true"
+    ports:
+      - "8080:8080"
+
+  # One-shot migration runner: `docker compose run --rm migrate`
+  # Not started by `docker compose up` -- migrations are an explicit,
+  # operator-triggered action, never an implicit side effect of starting
+  # the stack.
+  migrate:
+    image: postgres:16-bookworm
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FLOWFORGE_DATABASE_URL: postgres://${POSTGRES_USER:-flowforge}:${POSTGRES_PASSWORD:-flowforge}@postgres:5432/${POSTGRES_DB:-flowforge}
+    volumes:
+      - ./database:/database:ro
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/bash", "/scripts/db-migrate.sh"]
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.dashboard
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+    ports:
+      - "3000:3000"
+
+volumes:
+  flowforge_postgres_data:

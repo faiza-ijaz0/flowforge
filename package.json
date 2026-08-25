@@ -1,0 +1,19 @@
+{
+  "name": "flowforge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "FlowForge monorepo root -- npm workspaces for apps/dashboard and packages/shared. The C++ engine/server are built separately via CMake (see README.md).",
+  "workspaces": [
+    "apps/dashboard",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev:dashboard": "npm run dev --workspace=apps/dashboard",
+    "build:dashboard": "npm run build --workspace=apps/dashboard",
+    "lint:dashboard": "npm run lint --workspace=apps/dashboard",
+    "typecheck:dashboard": "npm run typecheck --workspace=apps/dashboard"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

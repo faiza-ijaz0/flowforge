@@ -1,0 +1,8 @@
+{
+  "name": "@flowforge/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hand-written TypeScript types mirroring the FlowForge REST API's JSON contracts (see apps/server/src/json). Consumed by apps/dashboard. No build step: consumers import the .ts sources directly via TypeScript's `paths` mapping, which is sufficient for a single-consumer monorepo package.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts"
+}

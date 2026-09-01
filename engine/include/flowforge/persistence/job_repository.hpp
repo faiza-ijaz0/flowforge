@@ -30,6 +30,16 @@ class IJobRepository {
   [[nodiscard]] virtual Result<std::vector<domain::Job>> list(std::size_t limit,
                                                               std::size_t offset) const = 0;
   virtual Result<void> update(const domain::Job& job) = 0;
+
+  /// Returns up to `limit` jobs currently in `status`, in an unspecified
+  /// but stable order (oldest-updated first in both implementations).
+  /// Added for Phase 2B-4's `engine::RetryDispatcher` (`status ==
+  /// JobStatus::Retrying`), which needs to find retry-eligible jobs
+  /// without a full-table `list()` scan -- `jobs.status` already has an
+  /// index (`idx_jobs_status`, migration 0005) from Phase 1, so no new
+  /// migration is needed for this query to be efficient.
+  [[nodiscard]] virtual Result<std::vector<domain::Job>> list_by_status(domain::JobStatus status,
+                                                                        std::size_t limit) const = 0;
 };
 
 }  // namespace flowforge::persistence

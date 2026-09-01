@@ -1,7 +1,11 @@
 #include "http/app.hpp"
 
 #include <chrono>
+#include <tuple>
 
+#include "flowforge/engine/job_executor.hpp"
+#include "flowforge/handlers/builtin_handlers.hpp"
+#include "http/cors.hpp"
 #include "http/routes/health_routes.hpp"
 #include "http/routes/job_routes.hpp"
 #include "http/routes/worker_routes.hpp"
@@ -9,31 +13,155 @@
 
 namespace flowforge::server {
 
-App::App(infra::AppConfig config)
+Result<std::unique_ptr<App>> App::create(infra::AppConfig config) {
+  auto logger = infra::make_logger(config.log_level, config.structured_logging);
+  auto metrics = infra::make_in_memory_metrics_registry();
+
+  auto repositories = persistence::create_repositories(config, logger, metrics);
+  if (!repositories) {
+    logger->critical("server", "failed to initialize persistence",
+                     {{.key = "error", .value = repositories.error().message()}});
+    return std::unexpected(repositories.error());
+  }
+
+  auto handler_registry = std::make_shared<engine::HandlerRegistry>();
+  if (auto registered = handlers::register_builtin_handlers(*handler_registry); !registered) {
+    logger->critical("server", "failed to register built-in handlers",
+                     {{.key = "error", .value = registered.error().message()}});
+    return std::unexpected(registered.error());
+  }
+
+  auto executor = std::make_shared<engine::JobExecutor>(
+      handler_registry, repositories->jobs, repositories->executions, infra::make_system_clock(), logger,
+      metrics, std::chrono::milliseconds(config.execution_timeout_ms));
+
+  auto worker_pool = std::make_shared<engine::LocalWorkerPool>(
+      executor, repositories->workers,
+      engine::WorkerPoolConfig{.worker_count = config.worker_pool_size,
+                               .queue_capacity = config.worker_pool_queue_capacity},
+      logger, metrics);
+  if (auto started = worker_pool->start(); !started) {
+    logger->critical("server", "failed to start worker pool",
+                     {{.key = "error", .value = started.error().message()}});
+    return std::unexpected(started.error());
+  }
+
+  auto scheduler = std::make_shared<engine::PriorityScheduler>(
+      handler_registry,
+      engine::SchedulerConfig{.queue_capacity = config.scheduler_queue_capacity,
+                              .dispatch_worker_count = config.scheduler_dispatch_workers},
+      logger, metrics, worker_pool);
+  if (auto started = scheduler->start(); !started) {
+    logger->critical("server", "failed to start scheduler",
+                     {{.key = "error", .value = started.error().message()}});
+    return std::unexpected(started.error());
+  }
+
+  // Phase 2B-4: the retry engine. Constructed last, after the Scheduler it
+  // re-submits jobs to already exists -- see
+  // docs/architecture/execution-model.md, "Retry engine" for why this
+  // ordering (rather than injecting IScheduler into JobExecutor) avoids a
+  // circular construction dependency (JobExecutor is built before
+  // LocalWorkerPool, which the Scheduler itself depends on).
+  auto retry_dispatcher = std::make_shared<engine::RetryDispatcher>(
+      repositories->jobs, scheduler, infra::make_system_clock(),
+      engine::RetryDispatcherConfig{.poll_interval = config.retry_poll_interval_ms,
+                                    .batch_size = config.retry_batch_size},
+      logger, metrics);
+  if (auto started = retry_dispatcher->start(); !started) {
+    logger->critical("server", "failed to start retry dispatcher",
+                     {{.key = "error", .value = started.error().message()}});
+    return std::unexpected(started.error());
+  }
+
+  // Every dependency this process needs (persistence, worker pool,
+  // scheduler, retry dispatcher) has now started successfully -- this is
+  // the one moment "application readiness" (as opposed to "process
+  // alive") is genuinely achieved, so it's the right place to log it
+  // (Phase 2B-5). GET /ready computes its answer live on every request
+  // rather than trusting a cached "became ready" flag (see
+  // ReadinessChecks) -- this log line is a startup-diagnostics signal for
+  // an operator watching logs, not something /ready itself depends on.
+  logger->info("server", "application ready to accept work", {});
+
+  // std::unique_ptr<App>(new App(...)) rather than std::make_unique: App's
+  // constructor is private (construction must go through create()), which
+  // make_unique cannot reach.
+  return std::unique_ptr<App>(new App(std::move(config), std::move(logger), std::move(metrics),
+                                      std::move(*repositories), std::move(handler_registry),
+                                      std::move(worker_pool), std::move(scheduler),
+                                      std::move(retry_dispatcher)));
+}
+
+App::App(infra::AppConfig config, std::shared_ptr<infra::Logger> logger,
+         std::shared_ptr<infra::MetricsRegistry> metrics, persistence::RepositoryBundle repositories,
+         std::shared_ptr<engine::HandlerRegistry> handler_registry,
+         std::shared_ptr<engine::LocalWorkerPool> worker_pool,
+         std::shared_ptr<engine::PriorityScheduler> scheduler,
+         std::shared_ptr<engine::RetryDispatcher> retry_dispatcher)
     : config_(std::move(config)),
-      logger_(infra::make_logger(config_.log_level, config_.structured_logging)),
+      logger_(std::move(logger)),
       clock_(infra::make_system_clock()),
-      metrics_(infra::make_in_memory_metrics_registry()),
-      job_repository_(std::make_shared<persistence::InMemoryJobRepository>()),
-      workflow_repository_(std::make_shared<persistence::InMemoryWorkflowRepository>()),
-      worker_repository_(std::make_shared<persistence::InMemoryWorkerRepository>()),
-      job_service_(std::make_shared<services::JobService>(job_repository_, clock_, logger_)),
+      metrics_(std::move(metrics)),
+      job_repository_(std::move(repositories.jobs)),
+      workflow_repository_(std::move(repositories.workflows)),
+      worker_repository_(std::move(repositories.workers)),
+      execution_manager_(std::move(repositories.executions)),
+      job_service_(std::make_shared<services::JobService>(job_repository_, clock_, logger_, metrics_)),
+      handler_registry_(std::move(handler_registry)),
+      worker_pool_(std::move(worker_pool)),
+      scheduler_(std::move(scheduler)),
+      retry_dispatcher_(std::move(retry_dispatcher)),
+      database_health_check_(std::move(repositories.check_database_health)),
       process_start_time_(std::chrono::steady_clock::now()) {
   register_routes();
 }
 
 void App::register_routes() {
-  register_health_routes(http_, metrics_, config_, process_start_time_);
-  register_job_routes(http_, job_service_, metrics_);
+  register_cors(http_, config_.cors_allowed_origin);
+
+  // Phase 2B-5: GET /ready reflects the actual state of every component
+  // required to accept and process work, not just process liveness -- see
+  // health_routes.hpp's class comment and docs/architecture/
+  // execution-model.md, "Health vs readiness". Each check below is a
+  // cheap, already-existing, non-blocking accessor -- nothing here adds a
+  // new blocking call or a live database query on the request path.
+  ReadinessChecks readiness{
+      .database_healthy = database_health_check_,
+      .scheduler_running = [scheduler =
+                                scheduler_] { return scheduler->state() == engine::SchedulerState::Running; },
+      .worker_pool_running = [worker_pool = worker_pool_] { return worker_pool->is_running(); },
+      .retry_dispatcher_running = [retry_dispatcher =
+                                       retry_dispatcher_] { return retry_dispatcher->is_running(); },
+  };
+  register_health_routes(http_, metrics_, config_, process_start_time_, std::move(readiness));
+
+  register_job_routes(http_, job_service_, scheduler_, worker_pool_, execution_manager_, metrics_);
   register_workflow_routes(http_, workflow_repository_);
   register_worker_routes(http_, worker_repository_);
 
-  http_.set_logger([logger = logger_](const httplib::Request& req, const httplib::Response& res) {
-    logger->info("http", "request handled",
-                 {{.key = "method", .value = req.method},
-                  {.key = "path", .value = req.path},
-                  {.key = "status", .value = std::to_string(res.status)}});
-  });
+  http_.set_logger(
+      [logger = logger_, metrics = metrics_](const httplib::Request& req, const httplib::Response& res) {
+        logger->info("http", "request handled",
+                     {{.key = "method", .value = req.method},
+                      {.key = "path", .value = req.path},
+                      {.key = "status", .value = std::to_string(res.status)}});
+        // Phase 2B-5: coarse HTTP-level counters. Deliberately not a
+        // per-request latency histogram here -- that would need a start
+        // timestamp captured before routing, and httplib only supports one
+        // pre-routing-handler registration for the whole server, already
+        // owned by CORS's OPTIONS handling (cors.cpp); duplicating or
+        // restructuring that seam just for HTTP latency was judged not worth
+        // the risk this phase (see docs/architecture/execution-model.md,
+        // "Observability", for the documented tradeoff). Execution-duration
+        // timing -- the metric that actually matters for a job engine -- is
+        // covered precisely, via a monotonic clock, at JobExecutor's boundary
+        // instead (§20.3 of that doc).
+        metrics->increment_counter("flowforge_http_requests_total");
+        if (res.status >= 400) {
+          metrics->increment_counter("flowforge_http_request_errors_total");
+        }
+      });
 }
 
 void App::run() {
@@ -48,7 +176,24 @@ void App::run() {
 }
 
 void App::stop() {
+  // Bracketing log lines (Phase 2B-5) so "did shutdown actually complete
+  // cleanly" is answerable from logs alone -- each component below also
+  // logs its own start/stop, but there was previously no single signal
+  // marking the beginning and end of the overall shutdown sequence.
+  logger_->info("server", "graceful shutdown starting", {});
   http_.stop();
+  // Order matters, upstream-first: stop the RetryDispatcher first so it
+  // stops handing retried jobs to the Scheduler, then the Scheduler so it
+  // stops handing new jobs to the WorkerPool, then the WorkerPool (which
+  // drains and executes whatever it already has queued before joining).
+  // All calls are best-effort -- stop() fails with ErrorCode::Conflict if
+  // already stopped (e.g. a second App::stop() call), which is harmless
+  // here since each component's own destructor would otherwise handle it
+  // defensively.
+  std::ignore = retry_dispatcher_->stop();
+  std::ignore = scheduler_->stop();
+  std::ignore = worker_pool_->stop();
+  logger_->info("server", "graceful shutdown complete", {});
 }
 
 }  // namespace flowforge::server

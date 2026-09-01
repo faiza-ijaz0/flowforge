@@ -7,9 +7,23 @@ add_executable(flowforge_engine_tests
   infra/ids_test.cpp
   domain/retry_policy_test.cpp
   domain/job_test.cpp
+  domain/execution_result_test.cpp
+  domain/execution_test.cpp
   engine/blocking_queue_test.cpp
   engine/thread_pool_test.cpp
+  engine/handler_registry_test.cpp
+  engine/execution_model_acceptance_test.cpp
+  engine/priority_blocking_queue_test.cpp
+  engine/priority_scheduler_test.cpp
+  engine/job_executor_test.cpp
+  engine/local_worker_pool_test.cpp
+  engine/retry_dispatcher_test.cpp
+  engine/retry_engine_acceptance_test.cpp
+  handlers/echo_handler_test.cpp
+  handlers/transform_handler_test.cpp
+  handlers/delay_handler_test.cpp
   persistence/in_memory_job_repository_test.cpp
+  persistence/in_memory_execution_repository_test.cpp
   services/job_service_test.cpp
 )
 
@@ -18,6 +32,26 @@ target_link_libraries(flowforge_engine_tests
     flowforge::engine
     GTest::gtest_main
 )
+
+# PostgreSQL integration tests: compiled only when this build has
+# PostgreSQL support (FLOWFORGE_WITH_POSTGRES, decided in the top-level
+# CMakeLists.txt), and skipped at runtime (GTEST_SKIP, not silently
+# reported as passing) unless FLOWFORGE_TEST_DATABASE_URL/
+# FLOWFORGE_DATABASE_URL points at a real, reachable PostgreSQL instance --
+# see engine/tests/persistence/postgres/postgres_test_support.hpp and
+# docs/development/getting-started.md.
+if(FLOWFORGE_WITH_POSTGRES)
+  target_sources(flowforge_engine_tests PRIVATE
+    persistence/postgres/connection_pool_test.cpp
+    persistence/postgres/postgres_job_repository_test.cpp
+    persistence/postgres/postgres_workflow_repository_test.cpp
+    persistence/postgres/postgres_worker_repository_test.cpp
+    persistence/postgres/postgres_execution_repository_test.cpp
+    persistence/postgres/postgres_retry_engine_acceptance_test.cpp
+  )
+  target_include_directories(flowforge_engine_tests PRIVATE persistence/postgres)
+  target_link_libraries(flowforge_engine_tests PRIVATE pqxx)
+endif()
 
 flowforge_set_project_warnings(flowforge_engine_tests)
 flowforge_enable_sanitizers(flowforge_engine_tests)

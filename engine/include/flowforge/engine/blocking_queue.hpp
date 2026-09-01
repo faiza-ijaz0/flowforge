@@ -51,6 +51,22 @@ class BlockingQueue {
     return item;
   }
 
+  /// Non-blocking. Returns false (item not accepted) if the queue is
+  /// closed or already at capacity -- callers needing backpressure
+  /// (reject immediately rather than block, e.g. `LocalWorkerPool::
+  /// dispatch()`) use this instead of `push()`. `capacity_ == 0` means
+  /// unbounded, same as `push()`.
+  bool try_push(T item) {
+    std::unique_lock lock(mutex_);
+    if (closed_ || (capacity_ != 0 && items_.size() >= capacity_)) {
+      return false;
+    }
+    items_.push_back(std::move(item));
+    lock.unlock();
+    not_empty_.notify_one();
+    return true;
+  }
+
   /// Non-blocking pop; returns std::nullopt if no item is immediately available.
   std::optional<T> try_pop() {
     std::lock_guard lock(mutex_);

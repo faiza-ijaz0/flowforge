@@ -18,4 +18,18 @@ std::string_view to_string(ExecutionOutcome outcome) noexcept {
   return "unknown";
 }
 
+std::optional<ExecutionOutcome> execution_outcome_from_string(std::string_view value) noexcept {
+  if (value == "running")
+    return ExecutionOutcome::Running;
+  if (value == "succeeded")
+    return ExecutionOutcome::Succeeded;
+  if (value == "failed")
+    return ExecutionOutcome::Failed;
+  if (value == "timed_out")
+    return ExecutionOutcome::TimedOut;
+  if (value == "cancelled")
+    return ExecutionOutcome::Cancelled;
+  return std::nullopt;
+}
+
 }  // namespace flowforge::domain

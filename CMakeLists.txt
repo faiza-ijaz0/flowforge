@@ -26,6 +26,9 @@ option(FLOWFORGE_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(FLOWFORGE_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(FLOWFORGE_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(FLOWFORGE_ENABLE_CLANG_TIDY "Run clang-tidy during build" OFF)
+option(FLOWFORGE_WITH_POSTGRES
+  "Build the libpqxx-backed PostgreSQL persistence layer (requires a system libpq -- \
+see docs/development/getting-started.md, 'PostgreSQL setup')" ON)
 
 include(CompilerWarnings)
 include(Sanitizers)
@@ -34,9 +37,19 @@ include(Sanitizers)
 # All dependencies are fetched from source via FetchContent rather than
 # assuming a system package manager (vcpkg/conan) is present. This keeps
 # the project buildable on a bare machine with only CMake + a C++ compiler,
-# at the cost of a slower first configure. PostgreSQL connectivity
-# (libpqxx) is deliberately NOT included yet -- see docs/architecture/overview.md
-# for why persistence is interface-only in this phase.
+# at the cost of a slower first configure.
+#
+# PostgreSQL is the one exception: libpqxx (the C++ client) is fetched via
+# FetchContent like everything else, but it links against libpq, the C
+# client library, which libpqxx does NOT vendor or build from source --
+# it must already exist on the machine (installed via the PostgreSQL
+# distribution, libpq-dev, or vcpkg). This is a deliberate, documented
+# exception to the "no system package manager required" rule (see
+# docs/development/getting-started.md, "PostgreSQL setup"): building a full
+# libpq (which itself depends on OpenSSL/zlib) from source via FetchContent
+# is a materially different, much heavier undertaking than the header-only
+# / self-contained libraries below, and every real PostgreSQL deployment
+# environment already has libpq available one way or another.
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
@@ -66,6 +79,62 @@ set(HTTPLIB_COMPILE OFF CACHE INTERNAL "")
 set(HTTPLIB_REQUIRE_OPENSSL OFF CACHE INTERNAL "")
 
 FetchContent_MakeAvailable(spdlog nlohmann_json httplib)
+
+# libpq must be found on the system before we attempt to build libpqxx
+# against it. FLOWFORGE_WITH_POSTGRES defaults ON but degrades to OFF (with
+# a loud, non-silent warning -- never a silent skip) when libpq isn't
+# present, per the "don't force a dependency the environment can't support"
+# rule. Explicitly passing -DFLOWFORGE_WITH_POSTGRES=ON keeps the hard
+# requirement (configure fails instead of degrading) for CI/production
+# builds that must not silently ship without PostgreSQL support.
+if(FLOWFORGE_WITH_POSTGRES)
+  find_package(PostgreSQL QUIET)
+  if(NOT PostgreSQL_FOUND)
+    message(WARNING
+      "FLOWFORGE_WITH_POSTGRES is ON but no system PostgreSQL installation (libpq) was found by "
+      "find_package(PostgreSQL). Disabling PostgreSQL-backed persistence for this configure -- the "
+      "server will build with in-memory repositories only. Install PostgreSQL (Windows: the official "
+      "installer or 'winget install PostgreSQL.PostgreSQL.17'; Linux: 'apt-get install libpq-dev') and "
+      "re-run CMake configure to enable it, or pass -DFLOWFORGE_WITH_POSTGRES=OFF to silence this "
+      "warning. See docs/development/getting-started.md, 'PostgreSQL setup'.")
+    set(FLOWFORGE_WITH_POSTGRES OFF)
+  elseif(WIN32 AND TARGET PostgreSQL::PostgreSQL)
+    # The official Windows PostgreSQL distribution ships two link targets
+    # for libpq: libpq.a (a full static archive that additionally pulls in
+    # OpenSSL's internal symbols, which this project's MinGW/WinLibs
+    # toolchain has no linkable, ABI-compatible build of) and libpq.lib (a
+    # thin MSVC-style import library for libpq.dll, which needs nothing
+    # else -- MinGW's ld can link straight against it). CMake's
+    # FindPostgreSQL module prefers the .a; override it to the .lib import
+    # library instead. This is Windows/MinGW-specific -- Linux/macOS CI and
+    # local builds link the "real" libpq normally, since apt/brew's libpq
+    # already resolves its own OpenSSL dependency via the system linker.
+    # See docs/development/getting-started.md, "PostgreSQL setup (Windows)".
+    get_filename_component(_flowforge_pq_libdir "${PostgreSQL_LIBRARY}" DIRECTORY)
+    get_filename_component(_flowforge_pq_libext "${PostgreSQL_LIBRARY}" EXT)
+    if(_flowforge_pq_libext STREQUAL ".a" AND EXISTS "${_flowforge_pq_libdir}/libpq.lib")
+      message(STATUS "Windows: linking libpq.lib (dynamic import library) instead of the static libpq.a")
+      set_target_properties(PostgreSQL::PostgreSQL PROPERTIES IMPORTED_LOCATION "${_flowforge_pq_libdir}/libpq.lib")
+      set(PostgreSQL_LIBRARY "${_flowforge_pq_libdir}/libpq.lib")
+      set(PostgreSQL_LIBRARIES "${_flowforge_pq_libdir}/libpq.lib")
+    endif()
+    unset(_flowforge_pq_libdir)
+    unset(_flowforge_pq_libext)
+  endif()
+endif()
+
+if(FLOWFORGE_WITH_POSTGRES)
+  set(SKIP_BUILD_TEST ON CACHE INTERNAL "")
+  set(PQXX_LIBRARIES "" CACHE INTERNAL "")
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    libpqxx
+    GIT_REPOSITORY https://github.com/jtv/libpqxx.git
+    GIT_TAG 7.9.2
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_MakeAvailable(libpqxx)
+endif()
 
 if(FLOWFORGE_BUILD_TESTS)
   FetchContent_Declare(
@@ -117,3 +186,4 @@ message(STATUS "  Build tests:         ${FLOWFORGE_BUILD_TESTS}")
 message(STATUS "  Build benchmarks:    ${FLOWFORGE_BUILD_BENCHMARKS}")
 message(STATUS "  Warnings as errors:  ${FLOWFORGE_WARNINGS_AS_ERRORS}")
 message(STATUS "  ASan / UBSan / TSan: ${FLOWFORGE_ENABLE_ASAN} / ${FLOWFORGE_ENABLE_UBSAN} / ${FLOWFORGE_ENABLE_TSAN}")
+message(STATUS "  PostgreSQL support:  ${FLOWFORGE_WITH_POSTGRES}")

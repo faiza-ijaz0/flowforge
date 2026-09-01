@@ -15,12 +15,14 @@ class JobServiceTest : public ::testing::Test {
     repository = std::make_shared<persistence::InMemoryJobRepository>();
     clock = std::make_shared<infra::ManualClock>();
     logger = infra::make_logger(infra::LogLevel::Off, false);
-    service = std::make_unique<JobService>(repository, clock, logger);
+    metrics = infra::make_in_memory_metrics_registry();
+    service = std::make_unique<JobService>(repository, clock, logger, metrics);
   }
 
   std::shared_ptr<persistence::InMemoryJobRepository> repository;
   std::shared_ptr<infra::ManualClock> clock;
   std::shared_ptr<infra::Logger> logger;
+  std::shared_ptr<infra::MetricsRegistry> metrics;
   std::unique_ptr<JobService> service;
 };
 
@@ -108,6 +110,98 @@ TEST_F(JobServiceTest, CancelUnknownJobReturnsNotFound) {
   auto result = service->cancel_job("does-not-exist");
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::NotFound);
+}
+
+TEST_F(JobServiceTest, CreateJobDefaultsJobTypeToEmpty) {
+  auto result = service->create_job(
+      {.queue_name = "emails", .payload = "{}", .priority = 0, .retry_policy = std::nullopt});
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->job_type().empty());
+}
+
+TEST_F(JobServiceTest, CreateJobPersistsProvidedJobType) {
+  auto result = service->create_job({.queue_name = "emails",
+                                     .payload = "{}",
+                                     .priority = 0,
+                                     .retry_policy = std::nullopt,
+                                     .job_type = "echo"});
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->job_type(), "echo");
+
+  auto fetched = service->get_job(result->id().value());
+  ASSERT_TRUE(fetched.has_value());
+  EXPECT_EQ(fetched->job_type(), "echo");
+}
+
+TEST_F(JobServiceTest, CreateJobRejectsOverlyLongJobType) {
+  auto result = service->create_job({.queue_name = "emails",
+                                     .payload = "{}",
+                                     .priority = 0,
+                                     .retry_policy = std::nullopt,
+                                     .job_type = std::string(200, 'x')});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::Validation);
+}
+
+TEST_F(JobServiceTest, MarkQueuedTransitionsFromPendingToQueued) {
+  auto created = service->create_job(
+      {.queue_name = "emails", .payload = "{}", .priority = 0, .retry_policy = std::nullopt});
+  ASSERT_TRUE(created.has_value());
+
+  auto queued = service->mark_queued(created->id().value());
+  ASSERT_TRUE(queued.has_value());
+  EXPECT_EQ(queued->status(), domain::JobStatus::Queued);
+}
+
+TEST_F(JobServiceTest, MarkQueuedOnTerminalJobReturnsConflict) {
+  auto created = service->create_job(
+      {.queue_name = "emails", .payload = "{}", .priority = 0, .retry_policy = std::nullopt});
+  ASSERT_TRUE(created.has_value());
+  ASSERT_TRUE(service->cancel_job(created->id().value()).has_value());
+
+  auto queued = service->mark_queued(created->id().value());
+  ASSERT_FALSE(queued.has_value());
+  EXPECT_EQ(queued.error().code(), ErrorCode::Conflict);
+}
+
+TEST_F(JobServiceTest, MarkQueuedOnUnknownJobReturnsNotFound) {
+  auto result = service->mark_queued("does-not-exist");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::NotFound);
+}
+
+// --- Phase 2B-5: observability -----------------------------------------
+
+TEST_F(JobServiceTest, RejectedCreateJobIncrementsRejectedCounter) {
+  CreateJobRequest request{.queue_name = "", .payload = "{}", .priority = 0, .retry_policy = std::nullopt};
+  ASSERT_FALSE(service->create_job(request).has_value());
+
+  const auto snapshot = metrics->snapshot();
+  auto it = snapshot.counters.find("flowforge_jobs_rejected_total");
+  ASSERT_NE(it, snapshot.counters.end());
+  EXPECT_EQ(it->second, 1);
+}
+
+TEST_F(JobServiceTest, SuccessfulCreateJobDoesNotIncrementRejectedCounter) {
+  ASSERT_TRUE(
+      service
+          ->create_job({.queue_name = "emails", .payload = "{}", .priority = 0, .retry_policy = std::nullopt})
+          .has_value());
+
+  const auto snapshot = metrics->snapshot();
+  EXPECT_EQ(snapshot.counters.find("flowforge_jobs_rejected_total"), snapshot.counters.end());
+}
+
+TEST_F(JobServiceTest, MarkQueuedIncrementsQueuedCounter) {
+  auto created = service->create_job(
+      {.queue_name = "emails", .payload = "{}", .priority = 0, .retry_policy = std::nullopt});
+  ASSERT_TRUE(created.has_value());
+  ASSERT_TRUE(service->mark_queued(created->id().value()).has_value());
+
+  const auto snapshot = metrics->snapshot();
+  auto it = snapshot.counters.find("flowforge_jobs_queued_total");
+  ASSERT_NE(it, snapshot.counters.end());
+  EXPECT_EQ(it->second, 1);
 }
 
 }  // namespace

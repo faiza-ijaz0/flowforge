@@ -59,11 +59,23 @@ TEST(InMemoryMetricsRegistryTest, ConcurrentIncrementsAreNotLost) {
 
 TEST(RenderMetricsTextTest, ProducesReadableLines) {
   InMemoryMetricsRegistry registry;
-  registry.increment_counter("jobs_processed", 5);
+  registry.increment_counter("jobs_processed_total", 5);
   registry.set_gauge("queue_depth", 2.0);
   const std::string rendered = render_metrics_text(registry.snapshot());
   EXPECT_NE(rendered.find("jobs_processed_total 5"), std::string::npos);
   EXPECT_NE(rendered.find("queue_depth 2"), std::string::npos);
+}
+
+// Phase 2B-5 regression test: the renderer must never mutate a counter's
+// name -- it previously appended "_total" unconditionally, silently
+// doubling it for every counter that (like the vast majority in this
+// codebase) already included the suffix itself.
+TEST(RenderMetricsTextTest, DoesNotDoubleAnAlreadyPresentTotalSuffix) {
+  InMemoryMetricsRegistry registry;
+  registry.increment_counter("flowforge_example_total", 3);
+  const std::string rendered = render_metrics_text(registry.snapshot());
+  EXPECT_NE(rendered.find("flowforge_example_total 3"), std::string::npos);
+  EXPECT_EQ(rendered.find("flowforge_example_total_total"), std::string::npos);
 }
 
 }  // namespace

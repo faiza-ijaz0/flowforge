@@ -19,7 +19,7 @@ export default async function JobsPage() {
     <div>
       <PageHeader
         title="Jobs"
-        description="Live job records from the FlowForge API. Jobs are created and cancelled here for real; execution/scheduling is Phase 2."
+        description="Live job records from the FlowForge API. A job with a job type is submitted to the real Scheduler, dispatched to a real WorkerPool, and actually executed by the matching handler -- open a job to see its real execution attempt history."
       />
 
       <div className="mb-6">
@@ -40,6 +40,8 @@ export default async function JobsPage() {
               <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
                 <th className="px-4 py-3 font-medium">ID</th>
                 <th className="px-4 py-3 font-medium">Queue</th>
+                <th className="px-4 py-3 font-medium">Type</th>
+                <th className="px-4 py-3 font-medium">Priority</th>
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 font-medium">Attempts</th>
                 <th className="px-4 py-3 font-medium">Created</th>
@@ -48,7 +50,7 @@ export default async function JobsPage() {
             <tbody>
               {jobsResult?.jobs.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-[var(--muted)]">
+                  <td colSpan={7} className="px-4 py-8 text-center text-[var(--muted)]">
                     No jobs yet. Create one above.
                   </td>
                 </tr>
@@ -61,6 +63,8 @@ export default async function JobsPage() {
                     </Link>
                   </td>
                   <td className="px-4 py-3">{job.queue_name}</td>
+                  <td className="px-4 py-3 text-[var(--muted)]">{job.job_type || "—"}</td>
+                  <td className="px-4 py-3 text-[var(--muted)]">{job.priority}</td>
                   <td className="px-4 py-3">
                     <StatusBadge status={job.status} />
                   </td>

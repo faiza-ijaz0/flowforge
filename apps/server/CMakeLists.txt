@@ -7,6 +7,7 @@ add_library(flowforge_server_lib STATIC
   src/time_format.cpp
   src/json/job_json.cpp
   src/http/error_response.cpp
+  src/http/cors.cpp
   src/http/app.cpp
   src/http/routes/health_routes.cpp
   src/http/routes/job_routes.cpp

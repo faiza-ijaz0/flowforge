@@ -7,6 +7,7 @@ const STATUS_STYLES: Record<string, string> = {
   retrying: "bg-amber-500/15 text-amber-300",
   cancelled: "bg-slate-500/15 text-slate-400",
   dead_letter: "bg-red-500/20 text-red-400",
+  timed_out: "bg-red-500/15 text-red-300",
   idle: "bg-slate-500/15 text-slate-300",
   busy: "bg-amber-500/15 text-amber-300",
   offline: "bg-slate-500/15 text-slate-500",

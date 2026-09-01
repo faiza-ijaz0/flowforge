@@ -6,6 +6,7 @@
 add_executable(flowforge_benchmarks
   thread_pool_benchmark.cpp
   blocking_queue_benchmark.cpp
+  handler_registry_benchmark.cpp
 )
 
 target_link_libraries(flowforge_benchmarks

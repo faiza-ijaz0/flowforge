@@ -9,6 +9,7 @@
 #include "flowforge/domain/retry_policy.hpp"
 #include "flowforge/infra/clock.hpp"
 #include "flowforge/infra/logger.hpp"
+#include "flowforge/infra/metrics.hpp"
 #include "flowforge/persistence/job_repository.hpp"
 #include "flowforge/result.hpp"
 
@@ -19,6 +20,12 @@ struct CreateJobRequest {
   std::string payload;
   int priority = 0;
   std::optional<domain::RetryPolicy> retry_policy;
+  /// Optional (default ""). If non-empty, the created Job carries this
+  /// job_type; JobService only validates its length/format here -- it
+  /// does not check that a handler is registered for it (that would
+  /// couple JobService to engine::HandlerRegistry, which is Scheduler's
+  /// concern; see docs/architecture/execution-model.md).
+  std::string job_type = "";
 };
 
 /// Application-level orchestration for job CRUD, sitting between the
@@ -31,18 +38,30 @@ struct CreateJobRequest {
 class JobService {
  public:
   JobService(std::shared_ptr<persistence::IJobRepository> repository, std::shared_ptr<infra::Clock> clock,
-             std::shared_ptr<infra::Logger> logger)
-      : repository_(std::move(repository)), clock_(std::move(clock)), logger_(std::move(logger)) {}
+             std::shared_ptr<infra::Logger> logger, std::shared_ptr<infra::MetricsRegistry> metrics = nullptr)
+      : repository_(std::move(repository)),
+        clock_(std::move(clock)),
+        logger_(std::move(logger)),
+        metrics_(std::move(metrics)) {}
 
   [[nodiscard]] Result<domain::Job> create_job(const CreateJobRequest& request);
   [[nodiscard]] Result<domain::Job> get_job(const std::string& id) const;
   [[nodiscard]] Result<std::vector<domain::Job>> list_jobs(std::size_t limit, std::size_t offset) const;
   [[nodiscard]] Result<domain::Job> cancel_job(const std::string& id);
 
+  /// Transitions a job from Pending to Queued and persists it. Called by
+  /// the HTTP layer after engine::IScheduler::schedule() accepts a
+  /// newly-created job (see apps/server/src/http/routes/job_routes.cpp)
+  /// -- JobService has no dependency on the Scheduler/HandlerRegistry
+  /// itself, it only records the resulting state. Fails with
+  /// ErrorCode::Conflict if the job is already in a terminal state.
+  [[nodiscard]] Result<domain::Job> mark_queued(const std::string& id);
+
  private:
   std::shared_ptr<persistence::IJobRepository> repository_;
   std::shared_ptr<infra::Clock> clock_;
   std::shared_ptr<infra::Logger> logger_;
+  std::shared_ptr<infra::MetricsRegistry> metrics_;
 };
 
 }  // namespace flowforge::services

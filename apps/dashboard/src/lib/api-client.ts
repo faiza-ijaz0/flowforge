@@ -1,7 +1,9 @@
 import type {
   ApiErrorBody,
   CreateJobInput,
+  CreateJobResponse,
   Job,
+  ListAttemptsResponse,
   ListJobsResponse,
   ListWorkersResponse,
   ListWorkflowsResponse,
@@ -63,9 +65,11 @@ export const apiClient = {
     request<ListJobsResponse>(`/api/v1/jobs?limit=${limit}&offset=${offset}`),
   getJob: (id: string) => request<Job>(`/api/v1/jobs/${encodeURIComponent(id)}`),
   createJob: (input: CreateJobInput) =>
-    request<Job>("/api/v1/jobs", { method: "POST", body: JSON.stringify(input) }),
+    request<CreateJobResponse>("/api/v1/jobs", { method: "POST", body: JSON.stringify(input) }),
   cancelJob: (id: string) =>
     request<Job>(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  getJobAttempts: (id: string) =>
+    request<ListAttemptsResponse>(`/api/v1/jobs/${encodeURIComponent(id)}/attempts`),
 
   listWorkflows: () => request<ListWorkflowsResponse>("/api/v1/workflows"),
   listWorkers: () => request<ListWorkersResponse>("/api/v1/workers"),

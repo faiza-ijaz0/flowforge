@@ -11,7 +11,18 @@ add_library(flowforge_engine STATIC
   src/domain/workflow.cpp
   src/domain/worker.cpp
   src/domain/execution.cpp
+  src/domain/execution_result.cpp
+  src/engine/handler_registry.cpp
+  src/engine/priority_scheduler.cpp
+  src/engine/job_executor.cpp
+  src/engine/local_worker_pool.cpp
+  src/engine/retry_dispatcher.cpp
+  src/handlers/echo_handler.cpp
+  src/handlers/delay_handler.cpp
+  src/handlers/transform_handler.cpp
+  src/handlers/builtin_handlers.cpp
   src/persistence/in_memory_repositories.cpp
+  src/persistence/repository_factory.cpp
   src/services/job_service.cpp
 )
 
@@ -30,6 +41,29 @@ target_link_libraries(flowforge_engine
 )
 
 target_compile_features(flowforge_engine PUBLIC cxx_std_23)
+
+# --- PostgreSQL persistence (Phase 2A) --------------------------------------
+# See docs/architecture/overview.md, "PostgreSQL persistence architecture",
+# for the connection pool / transaction / error-mapping design. Kept as a
+# separate, conditionally-compiled block: FLOWFORGE_WITH_POSTGRES is decided
+# once, at the top-level CMakeLists.txt, based on whether libpq was found.
+if(FLOWFORGE_WITH_POSTGRES)
+  target_sources(flowforge_engine PRIVATE
+    src/persistence/postgres/connection_pool.cpp
+    src/persistence/postgres/error_mapping.cpp
+    src/persistence/postgres/postgres_job_repository.cpp
+    src/persistence/postgres/postgres_workflow_repository.cpp
+    src/persistence/postgres/postgres_worker_repository.cpp
+    src/persistence/postgres/postgres_execution_repository.cpp
+  )
+  target_link_libraries(flowforge_engine PRIVATE pqxx)
+  # PUBLIC: repository_factory.hpp's #ifdef FLOWFORGE_WITH_POSTGRES branch
+  # is compiled into flowforge_engine, but any translation unit including
+  # that header (e.g. in apps/server) needs the same macro defined so its
+  # own view of the header (there is none conditional today, but keeps
+  # future call sites honest about which build they're in) stays consistent.
+  target_compile_definitions(flowforge_engine PUBLIC FLOWFORGE_WITH_POSTGRES=1)
+endif()
 
 flowforge_set_project_warnings(flowforge_engine)
 flowforge_enable_sanitizers(flowforge_engine)

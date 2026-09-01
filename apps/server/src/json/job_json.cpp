@@ -15,6 +15,7 @@ nlohmann::json to_json(const domain::Job& job) {
   nlohmann::json result{
       {"id", job.id().value()},
       {"queue_name", job.queue_name()},
+      {"job_type", job.job_type()},
       {"payload", payload_json},
       {"priority", job.priority()},
       {"status", std::string(domain::to_string(job.status()))},
@@ -25,6 +26,24 @@ nlohmann::json to_json(const domain::Job& job) {
   };
   const auto& last_error = job.last_error();
   result["last_error"] = last_error.has_value() ? nlohmann::json(*last_error) : nlohmann::json(nullptr);
+  return result;
+}
+
+nlohmann::json to_json(const domain::Execution& execution) {
+  nlohmann::json result{
+      {"id", execution.id.value()},
+      {"job_id", execution.job_id.value()},
+      {"attempt_number", execution.attempt_number},
+      {"outcome", std::string(domain::to_string(execution.outcome))},
+      {"started_at", to_iso8601(execution.started_at)},
+  };
+  result["worker_id"] = execution.worker_id.has_value() ? nlohmann::json(execution.worker_id->value())
+                                                        : nlohmann::json(nullptr);
+  result["finished_at"] = execution.finished_at.has_value()
+                              ? nlohmann::json(to_iso8601(*execution.finished_at))
+                              : nlohmann::json(nullptr);
+  result["error_message"] = execution.error_message.has_value() ? nlohmann::json(*execution.error_message)
+                                                                : nlohmann::json(nullptr);
   return result;
 }
 
@@ -46,6 +65,13 @@ Result<services::CreateJobRequest> parse_create_job_request(const nlohmann::json
     return std::unexpected(make_error(ErrorCode::Validation, "'payload' is required"));
   }
   request.payload = payload_it->is_string() ? payload_it->get<std::string>() : payload_it->dump();
+
+  if (auto job_type_it = body.find("job_type"); job_type_it != body.end()) {
+    if (!job_type_it->is_string()) {
+      return std::unexpected(make_error(ErrorCode::Validation, "'job_type' must be a string"));
+    }
+    request.job_type = job_type_it->get<std::string>();
+  }
 
   if (auto priority_it = body.find("priority"); priority_it != body.end()) {
     if (!priority_it->is_number_integer()) {

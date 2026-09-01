@@ -1,0 +1,11 @@
+-- Phase 2B-2 (Scheduler + priority dispatch): domain::Job gained a
+-- job_type field in Phase 2B-1 (engine/include/flowforge/domain/job.hpp)
+-- but it was deliberately left unpersisted until a real consumer needed
+-- it back off a stored row. The Scheduler now resolves job_type against
+-- HandlerRegistry to decide whether/how to dispatch a job, and the
+-- create-job API now accepts it -- so it must survive a database round
+-- trip like every other job field. Defaults to '' (matches
+-- domain::Job's in-memory default) so existing rows remain valid without
+-- a backfill: an empty job_type simply means "not schedulable yet",
+-- exactly as it already does for an in-memory-only Job.
+ALTER TABLE jobs ADD COLUMN job_type TEXT NOT NULL DEFAULT '';

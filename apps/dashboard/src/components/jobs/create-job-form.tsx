@@ -5,16 +5,21 @@ import { useState } from "react";
 
 import { apiClient, ApiError } from "@/lib/api-client";
 
+const JOB_TYPES = ["", "echo", "delay", "transform"] as const;
+
 export function CreateJobForm() {
   const router = useRouter();
   const [queueName, setQueueName] = useState("default");
+  const [jobType, setJobType] = useState<string>("");
   const [payload, setPayload] = useState('{\n  "example": true\n}');
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setInfo(null);
 
     let parsedPayload: unknown;
     try {
@@ -26,7 +31,14 @@ export function CreateJobForm() {
 
     setSubmitting(true);
     try {
-      await apiClient.createJob({ queue_name: queueName, payload: parsedPayload });
+      const created = await apiClient.createJob({
+        queue_name: queueName,
+        payload: parsedPayload,
+        ...(jobType ? { job_type: jobType } : {}),
+      });
+      if (jobType && !created.scheduling.scheduled) {
+        setInfo(`Job created but not scheduled: ${created.scheduling.reason ?? "unknown reason"}`);
+      }
       router.refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to create job");
@@ -47,6 +59,22 @@ export function CreateJobForm() {
         />
       </div>
       <div>
+        <label className="mb-1 block text-xs text-[var(--muted)]">
+          Job type (optional -- submits to the Scheduler when set)
+        </label>
+        <select
+          value={jobType}
+          onChange={(e) => setJobType(e.target.value)}
+          className="w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
+        >
+          {JOB_TYPES.map((type) => (
+            <option key={type} value={type} className="bg-[var(--background)]">
+              {type === "" ? "(none -- create only)" : type}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
         <label className="mb-1 block text-xs text-[var(--muted)]">Payload (JSON)</label>
         <textarea
           value={payload}
@@ -57,6 +85,7 @@ export function CreateJobForm() {
         />
       </div>
       {error && <div className="text-sm text-red-400">{error}</div>}
+      {info && <div className="text-sm text-yellow-400">{info}</div>}
       <button
         type="submit"
         disabled={submitting}

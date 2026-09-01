@@ -78,3 +78,6 @@ coverage/
 
 # --- Toolchain (installed locally by scripts, not committed) ---
 .toolchain/
+
+# --- Editor tooling caches ---
+.cache/

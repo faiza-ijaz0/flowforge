@@ -51,6 +51,22 @@ Result<void> InMemoryJobRepository::update(const domain::Job& job) {
   return {};
 }
 
+Result<std::vector<domain::Job>> InMemoryJobRepository::list_by_status(domain::JobStatus status,
+                                                                       std::size_t limit) const {
+  std::lock_guard lock(mutex_);
+  std::vector<domain::Job> result;
+  for (const auto& id : insertion_order_) {
+    if (result.size() >= limit) {
+      break;
+    }
+    const domain::Job& job = jobs_by_id_.at(id);
+    if (job.status() == status) {
+      result.push_back(job);
+    }
+  }
+  return result;
+}
+
 // --- InMemoryWorkflowRepository ------------------------------------------
 
 Result<void> InMemoryWorkflowRepository::insert(const domain::Workflow& workflow) {
@@ -142,6 +158,34 @@ Result<void> InMemoryWorkerRepository::update(const domain::Worker& worker) {
   }
   it->second = worker;
   return {};
+}
+
+// --- InMemoryExecutionRepository -------------------------------------------
+
+Result<void> InMemoryExecutionRepository::record(const domain::Execution& execution) {
+  std::lock_guard lock(mutex_);
+  const std::string& id = execution.id.value();
+  if (executions_by_id_.contains(id)) {
+    return std::unexpected(make_error(ErrorCode::Conflict, "execution with id '" + id + "' already exists"));
+  }
+  executions_by_id_.emplace(id, execution);
+  execution_ids_by_job_id_[execution.job_id.value()].push_back(id);
+  return {};
+}
+
+Result<std::vector<domain::Execution>> InMemoryExecutionRepository::history_for(
+    const infra::JobId& job_id) const {
+  std::lock_guard lock(mutex_);
+  std::vector<domain::Execution> result;
+  auto it = execution_ids_by_job_id_.find(job_id.value());
+  if (it == execution_ids_by_job_id_.end()) {
+    return result;
+  }
+  result.reserve(it->second.size());
+  for (const auto& execution_id : it->second) {
+    result.push_back(executions_by_id_.at(execution_id));
+  }
+  return result;
 }
 
 }  // namespace flowforge::persistence

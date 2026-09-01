@@ -1,8 +1,12 @@
 # FlowForge Architecture Overview
 
-This document describes the Phase 1 foundation: what exists, why it's shaped the way it is, and what
-is deliberately deferred. It is written to stay accurate as the system grows — when a deferred item is
-implemented, update the relevant section rather than leaving it stale.
+This document describes FlowForge's architecture through Phase 2B-5 (production observability and
+operational reliability): what exists, why it's shaped the way it is, and what is deliberately
+deferred. See [`execution-model.md`](execution-model.md) for the job execution/retry pipeline in
+full detail (§1–§21) — this document stays at the component/dependency-direction level. It is
+written to stay accurate as the system grows — when a deferred item is implemented, update the
+relevant section rather than
+leaving it stale.
 
 ## 1. Components and responsibilities
 
@@ -20,20 +24,26 @@ graph TB
     subgraph Engine["engine (C++ static library, flowforge::)"]
         Services["services::JobService<br/>(business logic / validation)"]
         Domain["domain::*<br/>Job, Workflow, Worker, Queue, Execution, RetryPolicy"]
-        EngineCore["engine::*<br/>ThreadPool, BlockingQueue (concrete)<br/>IScheduler, IExecutor, IWorkerPool,<br/>IQueueManager, IExecutionManager (interfaces)"]
-        Persistence["persistence::I*Repository<br/>+ InMemory* implementations"]
+        EngineCore["engine::*<br/>ThreadPool, BlockingQueue, PriorityBlockingQueue,<br/>HandlerRegistry, PriorityScheduler,<br/>LocalWorkerPool, JobExecutor (concrete)<br/>IQueueManager (interface)"]
+        Handlers["engine::IJobHandler + handlers::*<br/>(Echo/Delay/TransformHandler, concrete)"]
+        Persistence["persistence::I*Repository<br/>+ InMemory* implementations<br/>+ persistence::postgres::* implementations<br/>+ RepositoryFactory (composition root)"]
         Infra["infra::*<br/>Config, Logger, Clock, MetricsRegistry, Ids"]
     end
 
-    DB[("PostgreSQL<br/>(schema defined, not yet wired to code)")]
+    DB[("PostgreSQL")]
 
     Dashboard -- "fetch() JSON over HTTP" --> Routes
     Routes --> JSON --> Services
     Services --> Domain
     Services --> Persistence
-    Persistence -.->|Phase 2: libpqxx implementation| DB
-    EngineCore -.->|Phase 2: scheduler built on these| Services
+    Persistence -->|libpqxx, when FLOWFORGE_DATABASE_URL is set| DB
+    EngineCore --> Handlers
+    EngineCore -->|JobExecutor persists via| Persistence
 ```
+
+See [`execution-model.md`](execution-model.md) for the job lifecycle, handler abstraction,
+`HandlerRegistry`, `PriorityScheduler`, `LocalWorkerPool`, and `JobExecutor` in detail
+(Phase 2B-1 through 2B-3).
 
 | Component | Location | Responsibility | Depends on |
 |---|---|---|---|
@@ -100,30 +110,37 @@ Exceptions are still used, deliberately, for programming errors and truly except
 |---|---|
 | Domain types (`Job`, `Workflow`, `Worker`, `QueueConfig`, `Execution`, `RetryPolicy`) | **Real.** Full value types with invariants (e.g. `RetryPolicy::compute_backoff`, `Job::record_attempt_failure`), unit tested. |
 | `ThreadPool`, `BlockingQueue<T>` | **Real, tested, benchmarked.** The concrete concurrency primitives the future scheduler will be built on. |
-| `IScheduler`, `IExecutor`, `IWorkerPool`, `IQueueManager`, `IExecutionManager` | **Interfaces only.** No implementation exists; see §6. Building them requires design decisions (single vs. multi-queue dispatch, how cancellation interrupts in-flight work) that are Phase 2 scope. |
-| `IJobRepository` / `InMemoryJobRepository` | **Real**, backs the running server today. Not durable across restarts — see §7 for why PostgreSQL isn't wired up yet. |
-| `IWorkflowRepository`, `IWorkerRepository` | **Real but unused for writes** — `GET /api/v1/workflows` and `GET /api/v1/workers` return real (always-empty) data; nothing creates rows in these repositories yet. |
-| `JobService` (create/get/list/cancel) | **Real**, full validation, real HTTP integration test coverage (`apps/server/tests/http_server_test.cpp`). |
+| `IQueueManager` | **Interface only.** No implementation exists — `PriorityScheduler`'s internal `PriorityBlockingQueue` covers the need this phase, and nothing yet requires a general-purpose queue-management abstraction. |
+| `IJobHandler`, `ExecutionContext`, `domain::ExecutionResult`, `HandlerRegistry`, built-in handlers (`echo`/`delay`/`transform`) | **Real (Phase 2B-1).** See [`execution-model.md`](execution-model.md). |
+| `IScheduler` (`engine::PriorityScheduler`) | **Real (Phase 2B-2).** A bounded, priority-ordered, in-memory dispatch queue: validates a job, resolves its handler via `HandlerRegistry`, dispatches to `IWorkerPool`. Wired into `apps/server` (`App::create()` starts it; `POST /api/v1/jobs` submits to it when `job_type` is set). |
+| `IWorkerPool` (`engine::LocalWorkerPool`), `IExecutor` (`engine::JobExecutor`) | **Real (Phase 2B-3).** A job dispatched by the Scheduler is genuinely executed: `Queued -> Running -> Succeeded`/`Failed`/`Cancelled`, with a real `job_attempts` row per attempt. See [`execution-model.md`](execution-model.md) §10–§17. |
+| `IExecutionManager` (`InMemoryExecutionRepository` / `postgres::PostgresExecutionRepository`) | **Real (Phase 2B-3).** `job_attempts` persistence — see execution-model.md §12–§13. |
+| `IJobRepository` / `IWorkflowRepository` / `IWorkerRepository` | **Real, two implementations.** `InMemoryJobRepository` etc. (process-local, not durable — kept for fast unit tests and as the development-mode default) and `postgres::PostgresJobRepository` etc. (libpqxx-backed, durable). Selected at startup by `persistence::create_repositories` — see §7. |
+| `IWorkflowRepository` writes | **Real for the backend**, but nothing in the HTTP API creates workflow rows yet (`GET /api/v1/workflows` is the only route) — workflow execution remains future scope. `IWorkerRepository` writes are real and used: `LocalWorkerPool` registers one row per worker at startup (Phase 2B-3). |
+| `JobService` (create/get/list/cancel/mark_queued) | **Real**, full validation, real HTTP integration test coverage (`apps/server/tests/http_server_test.cpp`), against both persistence backends. |
 | `MetricsRegistry` | **Real, in-memory**, backs `GET /metrics`. Rendered as plain `name value` text, not Prometheus exposition format — see §8. |
-| PostgreSQL schema (`database/migrations/`) | **Real SQL**, designed and reviewed, but no C++ code executes it yet. |
+| PostgreSQL schema (`database/migrations/`) | **Real SQL, and now wired up** — `persistence::postgres::*` executes every migrated table via parameterized queries. See §7. |
 | Dashboard pages: Overview, Jobs, Workflows (list), Workers (list), Metrics | **Real HTTP calls** to the running server. |
 | Dashboard pages: Queues, Logs, Settings | **Explicit placeholders** (`NotYetImplemented` component) — no backing endpoint exists, and the page says so rather than showing empty tables that look like "no data yet" when it's really "no feature yet." |
 
-## 6. Deferred to Phase 2 (and why)
+## 6. Deferred to future phases (and why)
 
-- **Scheduler / Executor / WorkerPool implementations.** These require deciding the dispatch model
-  (e.g. one `ThreadPool` per queue vs. shared, how priority ordering interacts with per-queue
-  capacity) — a design task, not a small addition to what exists. `IScheduler` etc. exist so this can
-  be built and unit-tested against the existing domain/persistence layers without a redesign.
-- **Job execution.** There is no pluggable "job handler" registry yet (mapping a job's queue/type to
-  runnable code), no timeout enforcement, no cancellation-while-running support. `IExecutor` is the
-  seam this will be built behind.
-- **PostgreSQL persistence.** The schema is fully designed (§7 below), but no `libpqxx`-backed
-  `IJobRepository` implementation exists. Swapping it in touches one new file per repository, not
-  call sites, because everything already codes against the `I*Repository` interfaces.
+- **Job execution.** Now real end-to-end (Phase 2B-1 through 2B-3 — see
+  [`execution-model.md`](execution-model.md)): a job with a `job_type` is validated, resolved
+  against `HandlerRegistry`, dispatched via `PriorityScheduler` to `LocalWorkerPool`, and actually
+  executed by `JobExecutor` through `IJobHandler::execute()`, with a real `Queued -> Running ->
+  Succeeded`/`Failed`/`Cancelled` transition and a persisted `job_attempts` row per attempt.
+  Cancellation and a per-attempt timeout are both real, but purely cooperative (never a forced
+  thread kill) — see execution-model.md §14–§16 for exactly what that does and does not guarantee.
+  A retry engine is also now real (Phase 2B-4 — `engine::RetryDispatcher` re-submits a
+  retryable-failed job through `RetryPolicy::compute_backoff()`'s exponential backoff; exhausted
+  retries land on `DeadLetter`), and `/ready`/metrics/logging now honestly reflect the whole
+  pipeline's real-time state (Phase 2B-5) — see execution-model.md §18–§21. **Still deferred**:
+  workflow DAG execution.
 - **Workflow execution / DAG scheduling**, including cycle detection over `workflow_step_dependencies`.
-- **Worker process registration/heartbeating** as a separate deployable (`services/workers/` exists
-  as a placeholder directory for this).
+- **Distributed/multi-process worker coordination.** `LocalWorkerPool` (Phase 2B-3) is real but
+  in-process/local only — nothing yet coordinates job claiming across multiple `flowforge_server`
+  instances (see §10, "Scalability model").
 - **Prometheus-format `/metrics`** and any real exporter (OpenTelemetry, StatsD, etc.) — the
   `MetricsRegistry` interface is metrics-vendor-neutral specifically so this is a rendering-layer
   change, not an instrumentation-call-site change.
@@ -132,27 +149,145 @@ Exceptions are still used, deliberately, for programming errors and truly except
 - **Rate limiting, dead-letter queue processing, graceful drain of in-flight jobs on shutdown** beyond
   the HTTP server's own graceful stop (`App::stop()`).
 
-## 7. Persistence model
+## 7. Persistence model and PostgreSQL architecture (Phase 2A)
 
-The schema (`database/migrations/0001`-`0009`) mirrors the domain model directly:
+### 7.1 Schema
 
-- `queues` — logical queue configuration (name, capacity, priority).
+The schema (`database/migrations/0001`-`0010`) mirrors the domain model directly:
+
+- `queues` — logical queue configuration (name, capacity, priority). Nothing manages this table's
+  contents directly yet (no `IQueueRepository`); `PostgresJobRepository::insert` upserts a `queues`
+  row for whatever `queue_name` a job specifies, since `jobs.queue_name` has a foreign key to it and
+  no other component creates queues in this phase (see §7.4).
 - `jobs` — one row per job; `retry_policy` stored as `jsonb` since it's always read/written as a
-  unit and this avoids a migration every time the policy grows a field.
+  unit and this avoids a migration every time the policy grows a field. `job_type` (migration
+  `0011`, Phase 2B-2) is `TEXT NOT NULL DEFAULT ''`: `domain::Job` gained the field in Phase 2B-1
+  for the handler abstraction (see [`execution-model.md`](execution-model.md) §4) but it stayed
+  unpersisted until `PriorityScheduler` needed to read it back off a stored job.
 - `job_attempts` — one row per execution attempt (mirrors `domain::Execution`); `UNIQUE (job_id,
-  attempt_number)`.
-- `workers` — worker process metadata.
+  attempt_number)`. Written to for real as of Phase 2B-3, by `JobExecutor` via
+  `persistence::postgres::PostgresExecutionRepository` (`engine::IExecutionManager`) — see
+  [`execution-model.md`](execution-model.md) §12–§13.
+- `workers` — worker process metadata. Populated for real as of Phase 2B-3: `LocalWorkerPool`
+  registers one row per local worker thread at startup (`worker-1`, `worker-2`, ...) via the
+  existing `IWorkerRepository` — see execution-model.md §10.4.
 - `workflows` / `workflow_steps` / `workflow_step_dependencies` — the DAG is represented as an edge
   table (`step_id`, `depends_on_step_id`) rather than an array column, so referential integrity is
-  enforced by foreign keys.
+  enforced by foreign keys. Migration 0010 adds `workflow_steps.position`: all steps of one workflow
+  are inserted in a single transaction, and PostgreSQL's `now()` is transaction-stable, so every step
+  in that transaction gets an identical `created_at` — `position` is what makes `Workflow::steps()`'s
+  order round-trip correctly.
 - `audit_logs` — generic append-only trail across entity types, intentionally not foreign-keyed to
-  any single entity table so audit history survives entity deletion.
+  any single entity table so audit history survives entity deletion. No repository writes to this
+  table yet.
 
 `scripts/db-migrate.sh` / `.ps1` is a small, dependency-free runner: it applies files from
 `database/migrations/` in filename order, tracked in a `schema_migrations` table. This was chosen
 over a Node/Go migration framework because FlowForge's migrations are plain numbered SQL and pulling
 in another language's tooling to run them would be more moving parts than the problem warrants.
 Revisit if down-migrations or branching migration history become necessary.
+
+### 7.2 Dependency direction and code layout
+
+```
+domain::*  <--  persistence::I*Repository (interfaces)  <--  persistence::postgres::* (implementation)
+                                                          <--  persistence::In*Repository (implementation)
+```
+
+`persistence::postgres::*` lives under `engine/include/flowforge/persistence/postgres/` and
+`engine/src/persistence/postgres/`. The domain layer (`domain::*`) and the repository *interfaces*
+(`IJobRepository` etc.) have zero dependency on libpqxx — only the postgres implementation files
+`#include <pqxx/pqxx>`. `JobService`, the HTTP routes, and every unit test that uses
+`InMemoryJobRepository` are unaffected by whether PostgreSQL support is compiled in at all.
+
+The whole PostgreSQL layer is conditionally compiled behind the CMake option
+`FLOWFORGE_WITH_POSTGRES` (default `ON`, auto-detected: it degrades to `OFF` with a loud
+`message(WARNING)` — never silently — if `find_package(PostgreSQL)` can't find libpq). See
+`docs/development/getting-started.md`, "PostgreSQL setup", for what to install.
+
+### 7.3 Connection management
+
+`persistence::postgres::PgConnectionPool` (`connection_pool.hpp`) is a small, real, thread-safe fixed-
+size connection pool: `PgConnectionPool::create()` opens `pool_size` connections eagerly and verifies
+each with `is_open()`, so a bad connection string or unreachable database fails at startup, not on the
+first request (the "startup connectivity validation" every repository call ultimately depends on).
+`acquire()` returns an RAII `LeasedConnection` that returns the connection to the pool on destruction
+(built on `engine::BlockingQueue<T>` — the same primitive `ThreadPool` uses — as the free list), so a
+repository method can never leak a connection, including on an exception.
+
+This is deliberately the simplest pool that's still correct: fixed size, no acquire timeout, no
+dynamic growth. That's a known limitation, accepted for this phase because nothing yet drives
+sustained concurrent load against it (no Scheduler/WorkerPool exists — see §6). `acquire()`'s
+`Result<LeasedConnection>` return type already accommodates a future timeout becoming a real error
+path without changing any repository's code.
+
+### 7.4 Transaction strategy
+
+Every repository method acquires one connection, opens one `pqxx::work` (libpqxx's RAII transaction
+type — commits only on an explicit `.commit()`, rolls back automatically if the transaction is
+destroyed without one, including via an in-flight exception), does its parameterized query/queries,
+and commits before returning. `PostgresWorkflowRepository::insert()` is the clearest example of why
+this matters: it writes the `workflows` row, every `workflow_steps` row, and every
+`workflow_step_dependencies` edge in one transaction, so a failure partway through (e.g. a step
+referencing a `job_id` that doesn't exist) leaves nothing behind — not the workflow, not any step —
+rather than a half-written DAG. `PostgresJobRepository::insert()` similarly upserts the job's `queues`
+row and inserts the `jobs` row together: nothing in this phase populates `queues` ahead of time (no
+`IQueueRepository` exists), so the job repository provisions it transactionally rather than requiring
+every job creation path to remember to do so, or making `jobs.queue_name`'s foreign key optional.
+
+### 7.5 Data mapping decisions
+
+- **Timestamps**: bound/read as fractional seconds since the Unix epoch (`extract(epoch from col)` /
+  `to_timestamp($n)`), not formatted/parsed ISO-8601 strings. This sidesteps timezone-format parsing
+  entirely on both sides of the round trip.
+- **`job.payload`**: `domain::Job::payload()` is deliberately an opaque, already-serialized string
+  (see `job.hpp`) — not guaranteed to itself be valid JSON. Binding it straight into `jobs.payload
+  ::jsonb` would throw on a non-JSON payload. Instead, writes use `to_jsonb($n::text)` (wraps *any*
+  string as a valid JSON string scalar) and reads use `payload #>> '{}'` (unwraps it back to the exact
+  original text) — the `jsonb` column type from migration 0005 is unchanged, only how it's populated.
+- **`job.retry_policy`**: a small hand-rolled JSON encoder/decoder (in
+  `postgres_job_repository.cpp`, not a public header) rather than adding `nlohmann::json` as an engine
+  dependency for four numeric fields. The decoder looks each key up by name — PostgreSQL's `jsonb`
+  storage does not preserve the key order or spacing it was written with.
+- **`domain::Job::restore(...)`**: a new, additive static factory on `Job` (alongside the existing
+  constructor and `transition_to`/`record_attempt_*`) that reconstructs a `Job` from arbitrary
+  persisted state — status, attempt_count, last_error, timestamps — in one call. It deliberately does
+  not reuse `transition_to`/`record_attempt_*`: those encode the business rules for deciding a *new*
+  transition (e.g. consulting `retry_policy` to decide `Retrying` vs. `DeadLetter`), which is the
+  wrong thing to run again when restoring a row that already recorded a decided outcome.
+  `domain::Workflow` and `domain::Worker` needed no equivalent change — `transition_to` /
+  `heartbeat()`+`set_status()` were already sufficient to restore their full state.
+
+### 7.6 Error mapping
+
+`persistence::postgres::map_exception(e, context)` (`error_mapping.hpp`) turns a caught exception into
+FlowForge's `Error` type, matching pqxx's exception hierarchy: `unique_violation` → `Conflict`,
+`foreign_key_violation`/`check_violation`/`not_null_violation` → `Validation`, `broken_connection` →
+`Infrastructure`, any other `sql_error` → `Database`. The returned `Error`'s message is a short,
+context-labeled description (e.g. `"job_repository.insert: a record with this identity already
+exists"`) for every classified pqxx exception type. `map_exception`'s fallback branch (an
+exception pqxx doesn't specifically classify) does still embed the raw `e.what()` into that
+`Error`, which is exactly why Phase 2B-5 added a second, unconditional backstop at the HTTP layer
+(`apps/server/src/http/error_response.cpp::to_error_body()`, see execution-model.md §20.7): any
+error whose HTTP status is 5xx has its message replaced with a fixed, generic string before it
+ever reaches a response body, regardless of which branch of `map_exception` produced it. Every
+repository method still logs the full exception (`e.what()`) via `infra::Logger` before mapping
+it, so that detail isn't lost, just kept server-side.
+
+### 7.7 Repository selection (composition root)
+
+`persistence::create_repositories(config, logger, metrics)` (`repository_factory.hpp`/`.cpp`) is the
+one place that decides in-memory vs. PostgreSQL, based purely on whether `config.database_url` is set
+— never on the environment name. `AppConfig::load` already requires `FLOWFORGE_DATABASE_URL` outside
+development/test, so staging/production always take the PostgreSQL path; a developer can opt into it
+locally too by setting the same variable. If PostgreSQL is requested (`database_url` set) and
+unreachable, `create_repositories` returns an `Error` — there is no fallback path in the code at all,
+so `App::create()` (see §14 in `getting-started.md`'s startup description) fails startup cleanly rather
+than serving requests against a broken or substitute backend.
+
+`apps/server/src/http/app.cpp` calls `create_repositories()` once at startup and stores the results as
+`shared_ptr<IJobRepository>` etc. — `JobService` and the HTTP routes never know which backend they're
+talking to.
 
 ## 8. Observability
 
@@ -168,6 +303,13 @@ so application code never calls spdlog directly and a backend swap doesn't rippl
 `FLOWFORGE_STRUCTURED_LOGGING=true` emits one JSON object per line (production); `false` emits a
 human-readable colorized line (development). Every log call takes an explicit `component` string.
 
+`GET /health` (liveness) and `GET /ready` (readiness) are distinct on purpose (Phase 2B-5 made
+this real, not just documented): `/health` never depends on anything external and always answers
+"ok" as long as the HTTP server itself is up; `/ready` performs cheap, non-blocking checks against
+PostgreSQL, the scheduler, the worker pool, and the retry dispatcher, and returns `503` the moment
+any one is unavailable. See execution-model.md §20.4 for the full contract and exactly what each
+check does and does not detect.
+
 ## 9. Security baseline (this phase)
 
 - No secrets are committed; `.env.example` documents required variables with placeholder values only.
@@ -177,6 +319,12 @@ human-readable colorized line (development). Every log call takes an explicit `c
   with a message, never a stack trace or internal error detail.
 - The Docker images run as a non-root user (`infra/docker/Dockerfile.server`,
   `Dockerfile.dashboard`).
+- **PostgreSQL persistence (§7)**: every query is parameterized (`pqxx::work::exec_params`/`params` —
+  see `postgres_*_repository.cpp`); nothing in the persistence layer builds SQL by concatenating a
+  value into query text. `FLOWFORGE_DATABASE_URL` (which can contain a password) is never logged —
+  `PgConnectionPool` logs only the pool size, never the connection string. Database errors returned to
+  API callers carry a short, generic message (§7.6); raw PostgreSQL error text (which can include
+  query fragments) only ever reaches the server log, via `infra::Logger`, never an HTTP response body.
 - **Not yet implemented**: authentication/authorization on any endpoint. Every `/api/v1/*` route is
   currently open. The seam for this is `apps/server/src/http/app.cpp::register_routes` — an auth
   middleware/handler would wrap route registration here. This is called out explicitly rather than
@@ -209,3 +357,16 @@ Nothing in the current schema or interfaces blocks that design, but nothing impl
 - **HTTP library**: `cpp-httplib` — single-header, synchronous, no external dependencies (no OpenSSL
   required for plain HTTP). Chosen for this phase's scope (a handful of JSON endpoints); revisit if
   the server needs true async I/O at scale.
+- **PostgreSQL client library**: `libpqxx` 7.9.2, fetched via `FetchContent` like the other
+  dependencies, but it links against `libpq` (the C client library), which libpqxx does not vendor —
+  `libpq` must already be installed (see `docs/development/getting-started.md`, "PostgreSQL setup").
+  This is the one deliberate exception to "no system package manager required" in this project (root
+  `CMakeLists.txt` explains why building `libpq`+OpenSSL from source via `FetchContent` was judged not
+  worth it). **Windows/MinGW-specific**: the official PostgreSQL Windows distribution ships `libpq.a`
+  (a static archive that additionally requires OpenSSL's internal symbols, unavailable in a form this
+  WinLibs/MinGW toolchain can link against) alongside `libpq.lib` (a thin import library for
+  `libpq.dll`, which MinGW's linker consumes directly). CMake's `FindPostgreSQL` module finds the `.a`
+  first; root `CMakeLists.txt` detects this on `WIN32` and repoints the `PostgreSQL::PostgreSQL`
+  imported target at the `.lib` instead. This means `libpq.dll` must be on `PATH` at runtime on
+  Windows (the PostgreSQL installer's `bin/` directory) — Linux/macOS link `libpq` normally with no
+  such step, since apt/brew's `libpq` resolves its own OpenSSL dependency through the system linker.

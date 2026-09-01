@@ -22,6 +22,16 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
     throw error;
   }
 
+  // Additive (Phase 2B-3): real execution attempt history. Best-effort --
+  // an older server without this endpoint (or a transient error) should
+  // not break the rest of the page.
+  let attempts: Awaited<ReturnType<typeof apiClient.getJobAttempts>>["attempts"] = [];
+  try {
+    attempts = (await apiClient.getJobAttempts(id)).attempts;
+  } catch {
+    attempts = [];
+  }
+
   return (
     <div>
       <Link href="/jobs" className="text-sm text-[var(--accent)]">
@@ -40,6 +50,10 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
           <div className="mt-2">
             <StatusBadge status={job.status} />
           </div>
+        </Card>
+        <Card>
+          <div className="text-xs uppercase tracking-wide text-[var(--muted)]">Job type</div>
+          <div className="mt-2 text-lg font-semibold">{job.job_type || "—"}</div>
         </Card>
         <Card>
           <div className="text-xs uppercase tracking-wide text-[var(--muted)]">Attempts</div>
@@ -69,6 +83,61 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
         <pre className="overflow-x-auto rounded-md bg-black/30 p-3 text-xs">
           {JSON.stringify(job.payload, null, 2)}
         </pre>
+      </Card>
+
+      <Card className="mt-4 p-0">
+        <div className="p-4 pb-0 text-sm font-medium">
+          Execution attempts{" "}
+          <span className="text-xs font-normal text-[var(--muted)]">
+            (real handler invocations -- see docs/architecture/execution-model.md)
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
+                <th className="px-4 py-3 font-medium">#</th>
+                <th className="px-4 py-3 font-medium">Outcome</th>
+                <th className="px-4 py-3 font-medium">Worker</th>
+                <th className="px-4 py-3 font-medium">Started</th>
+                <th className="px-4 py-3 font-medium">Duration</th>
+                <th className="px-4 py-3 font-medium">Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {attempts.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-8 text-center text-[var(--muted)]">
+                    No execution attempts yet.
+                  </td>
+                </tr>
+              )}
+              {attempts.map((attempt) => {
+                const durationMs = attempt.finished_at
+                  ? new Date(attempt.finished_at).getTime() - new Date(attempt.started_at).getTime()
+                  : null;
+                return (
+                  <tr key={attempt.id} className="border-b border-[var(--border)] last:border-0">
+                    <td className="px-4 py-3">{attempt.attempt_number}</td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={attempt.outcome} />
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-[var(--muted)]">
+                      {attempt.worker_id ?? "—"}
+                    </td>
+                    <td className="px-4 py-3 text-[var(--muted)]">
+                      {new Date(attempt.started_at).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-[var(--muted)]">
+                      {durationMs !== null ? `${durationMs}ms` : "—"}
+                    </td>
+                    <td className="px-4 py-3 text-red-400">{attempt.error_message ?? "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </Card>
     </div>
   );

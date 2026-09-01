@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 
+#include "flowforge/engine/execution_manager.hpp"
 #include "flowforge/persistence/job_repository.hpp"
 #include "flowforge/persistence/worker_repository.hpp"
 #include "flowforge/persistence/workflow_repository.hpp"
@@ -23,6 +24,8 @@ class InMemoryJobRepository final : public IJobRepository {
   [[nodiscard]] Result<domain::Job> find_by_id(const infra::JobId& id) const override;
   [[nodiscard]] Result<std::vector<domain::Job>> list(std::size_t limit, std::size_t offset) const override;
   Result<void> update(const domain::Job& job) override;
+  [[nodiscard]] Result<std::vector<domain::Job>> list_by_status(domain::JobStatus status,
+                                                                std::size_t limit) const override;
 
  private:
   mutable std::mutex mutex_;
@@ -55,6 +58,25 @@ class InMemoryWorkerRepository final : public IWorkerRepository {
   mutable std::mutex mutex_;
   std::map<std::string, domain::Worker> workers_by_id_;
   std::vector<std::string> insertion_order_;
+};
+
+/// Real, thread-safe, in-process implementation of `engine::IExecutionManager`
+/// (the `job_attempts` persistence boundary -- see execution_manager.hpp).
+/// Declared here alongside the other `InMemory*Repository` types even
+/// though the interface it implements lives in `engine::` rather than
+/// `persistence::` (a Phase 1 placement choice for that one interface --
+/// not worth relitigating by moving it, since doing so touches no
+/// behavior). Used as the development/test-mode default, same as the
+/// other in-memory repositories.
+class InMemoryExecutionRepository final : public engine::IExecutionManager {
+ public:
+  Result<void> record(const domain::Execution& execution) override;
+  [[nodiscard]] Result<std::vector<domain::Execution>> history_for(const infra::JobId& job_id) const override;
+
+ private:
+  mutable std::mutex mutex_;
+  std::map<std::string, domain::Execution> executions_by_id_;
+  std::map<std::string, std::vector<std::string>> execution_ids_by_job_id_;
 };
 
 }  // namespace flowforge::persistence

@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "flowforge/domain/execution.hpp"
 #include "flowforge/domain/job.hpp"
 #include "flowforge/result.hpp"
 #include "flowforge/services/job_service.hpp"
@@ -14,6 +15,10 @@ namespace flowforge::server {
 /// payload is not valid JSON, which can only happen if a non-JSON payload
 /// was written directly through the service layer rather than the API.
 [[nodiscard]] nlohmann::json to_json(const domain::Job& job);
+
+/// Serializes an execution attempt record (Phase 2B-3, additive --
+/// `GET /api/v1/jobs/{id}/attempts`).
+[[nodiscard]] nlohmann::json to_json(const domain::Execution& execution);
 
 /// Parses and *shape*-validates (types/required fields) a create-job
 /// request body into a `CreateJobRequest`. Business-rule validation

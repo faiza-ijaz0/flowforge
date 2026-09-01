@@ -1,6 +1,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <thread>
 
 #include "flowforge/infra/config.hpp"
@@ -27,11 +28,17 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  flowforge::server::App app(*config_result);
-  g_app = &app;
+  auto app_result = flowforge::server::App::create(*config_result);
+  if (!app_result) {
+    std::cerr << "FlowForge failed to start: " << app_result.error().message() << '\n';
+    return EXIT_FAILURE;
+  }
+
+  auto app = std::move(*app_result);
+  g_app = app.get();
   std::signal(SIGINT, handle_shutdown_signal);
   std::signal(SIGTERM, handle_shutdown_signal);
 
-  app.run();
+  app->run();
   return EXIT_SUCCESS;
 }

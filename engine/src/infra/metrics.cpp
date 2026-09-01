@@ -44,8 +44,14 @@ std::shared_ptr<MetricsRegistry> make_in_memory_metrics_registry() {
 
 std::string render_metrics_text(const MetricsRegistry::Snapshot& snapshot) {
   std::ostringstream oss;
+  // Phase 2B-5: the name a caller passes to increment_counter() is
+  // rendered verbatim -- no implicit "_total" suffix. Every counter in
+  // the codebase already spells out "_total" itself where that suffix is
+  // wanted (the dominant, established convention -- see
+  // docs/architecture/execution-model.md §20.1); auto-appending it here
+  // too silently doubled it to "..._total_total" for every one of them.
   for (const auto& [name, value] : snapshot.counters) {
-    oss << name << "_total " << value << '\n';
+    oss << name << ' ' << value << '\n';
   }
   for (const auto& [name, value] : snapshot.gauges) {
     oss << name << ' ' << value << '\n';

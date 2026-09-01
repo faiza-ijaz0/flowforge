@@ -34,6 +34,33 @@ TEST(BlockingQueueTest, TryPopReturnsNulloptWhenEmpty) {
   EXPECT_FALSE(queue.try_pop().has_value());
 }
 
+TEST(BlockingQueueTest, TryPushSucceedsUnderCapacity) {
+  BlockingQueue<int> queue(2);
+  EXPECT_TRUE(queue.try_push(1));
+  EXPECT_TRUE(queue.try_push(2));
+  EXPECT_EQ(queue.size(), 2u);
+}
+
+TEST(BlockingQueueTest, TryPushFailsAtCapacity) {
+  BlockingQueue<int> queue(1);
+  ASSERT_TRUE(queue.try_push(1));
+  EXPECT_FALSE(queue.try_push(2));
+  EXPECT_EQ(queue.size(), 1u);
+}
+
+TEST(BlockingQueueTest, TryPushFailsAfterClose) {
+  BlockingQueue<int> queue;
+  queue.close();
+  EXPECT_FALSE(queue.try_push(1));
+}
+
+TEST(BlockingQueueTest, TryPushOnUnboundedQueueNeverRejectsForCapacity) {
+  BlockingQueue<int> queue;  // capacity_ == 0 means unbounded.
+  for (int i = 0; i < 100; ++i) {
+    EXPECT_TRUE(queue.try_push(i));
+  }
+}
+
 TEST(BlockingQueueTest, CloseDrainsRemainingItemsThenReturnsNullopt) {
   BlockingQueue<int> queue;
   queue.push(1);

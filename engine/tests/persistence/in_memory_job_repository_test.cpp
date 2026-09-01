@@ -83,5 +83,45 @@ TEST(InMemoryJobRepositoryTest, UpdateUnknownJobReturnsNotFound) {
   EXPECT_EQ(result.error().code(), ErrorCode::NotFound);
 }
 
+TEST(InMemoryJobRepositoryTest, ListByStatusReturnsOnlyMatchingJobsInInsertionOrder) {
+  InMemoryJobRepository repo;
+  domain::Job retrying_1 = make_job();
+  domain::Job queued = make_job();
+  domain::Job retrying_2 = make_job();
+  ASSERT_TRUE(repo.insert(retrying_1).has_value());
+  ASSERT_TRUE(repo.insert(queued).has_value());
+  ASSERT_TRUE(repo.insert(retrying_2).has_value());
+
+  retrying_1.transition_to(domain::JobStatus::Retrying, std::chrono::system_clock::now());
+  ASSERT_TRUE(repo.update(retrying_1).has_value());
+  queued.transition_to(domain::JobStatus::Queued, std::chrono::system_clock::now());
+  ASSERT_TRUE(repo.update(queued).has_value());
+  retrying_2.transition_to(domain::JobStatus::Retrying, std::chrono::system_clock::now());
+  ASSERT_TRUE(repo.update(retrying_2).has_value());
+
+  auto retrying = repo.list_by_status(domain::JobStatus::Retrying, 10);
+  ASSERT_TRUE(retrying.has_value());
+  ASSERT_EQ(retrying->size(), 2u);
+  EXPECT_EQ((*retrying)[0].id(), retrying_1.id());
+  EXPECT_EQ((*retrying)[1].id(), retrying_2.id());
+
+  auto none = repo.list_by_status(domain::JobStatus::DeadLetter, 10);
+  ASSERT_TRUE(none.has_value());
+  EXPECT_TRUE(none->empty());
+}
+
+TEST(InMemoryJobRepositoryTest, ListByStatusRespectsLimit) {
+  InMemoryJobRepository repo;
+  for (int i = 0; i < 5; ++i) {
+    domain::Job job = make_job();
+    job.transition_to(domain::JobStatus::Retrying, std::chrono::system_clock::now());
+    ASSERT_TRUE(repo.insert(job).has_value());
+  }
+
+  auto limited = repo.list_by_status(domain::JobStatus::Retrying, 2);
+  ASSERT_TRUE(limited.has_value());
+  EXPECT_EQ(limited->size(), 2u);
+}
+
 }  // namespace
 }  // namespace flowforge::persistence

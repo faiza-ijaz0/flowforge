@@ -23,7 +23,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang cmake ninja-build
+          sudo apt-get install -y --no-install-recommends clang cmake ninja-build libpq-dev
 
       - name: Cache FetchContent dependencies
         uses: actions/cache@v4
@@ -54,7 +54,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang cmake ninja-build
+          sudo apt-get install -y --no-install-recommends clang cmake ninja-build libpq-dev
 
       - name: Configure
         run: |
@@ -71,6 +71,60 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build-san --output-on-failure
+
+  postgres-integration:
+    name: PostgreSQL integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-bookworm
+        env:
+          POSTGRES_USER: flowforge
+          POSTGRES_PASSWORD: flowforge
+          POSTGRES_DB: flowforge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flowforge -d flowforge_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FLOWFORGE_TEST_DATABASE_URL: postgres://flowforge:flowforge@localhost:5432/flowforge_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang cmake ninja-build libpq-dev postgresql-client
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: fetchcontent-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Run migrations against the test database
+        run: ./scripts/db-migrate.sh
+        env:
+          FLOWFORGE_DATABASE_URL: postgres://flowforge:flowforge@localhost:5432/flowforge_test
+
+      - name: Configure (and confirm PostgreSQL support is actually enabled)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DFLOWFORGE_BUILD_BENCHMARKS=OFF \
+            -DFLOWFORGE_WARNINGS_AS_ERRORS=ON | tee /tmp/configure.log
+          grep -q "PostgreSQL support:  ON" /tmp/configure.log
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Run engine + server tests (in-memory and PostgreSQL-backed)
+        run: ctest --test-dir build --output-on-failure
 
   cpp-format:
     name: clang-format check

@@ -110,6 +110,61 @@ Result<AppConfig> AppConfig::load(const GetenvFn& getenv_fn) {
     config.queue_default_capacity = static_cast<std::size_t>(*parsed);
   }
 
+  if (auto scheduler_queue_capacity_raw = getenv_fn("FLOWFORGE_SCHEDULER_QUEUE_CAPACITY")) {
+    auto parsed =
+        parse_positive_int<long>(*scheduler_queue_capacity_raw, "FLOWFORGE_SCHEDULER_QUEUE_CAPACITY");
+    if (!parsed)
+      return std::unexpected(parsed.error());
+    config.scheduler_queue_capacity = static_cast<std::size_t>(*parsed);
+  }
+
+  if (auto scheduler_workers_raw = getenv_fn("FLOWFORGE_SCHEDULER_DISPATCH_WORKERS")) {
+    auto parsed = parse_positive_int<long>(*scheduler_workers_raw, "FLOWFORGE_SCHEDULER_DISPATCH_WORKERS");
+    if (!parsed)
+      return std::unexpected(parsed.error());
+    config.scheduler_dispatch_workers = static_cast<std::size_t>(*parsed);
+  }
+
+  if (auto worker_pool_size_raw = getenv_fn("FLOWFORGE_WORKER_POOL_SIZE")) {
+    auto parsed = parse_positive_int<long>(*worker_pool_size_raw, "FLOWFORGE_WORKER_POOL_SIZE");
+    if (!parsed)
+      return std::unexpected(parsed.error());
+    config.worker_pool_size = static_cast<std::size_t>(*parsed);
+  }
+
+  if (auto worker_pool_queue_capacity_raw = getenv_fn("FLOWFORGE_WORKER_POOL_QUEUE_CAPACITY")) {
+    auto parsed =
+        parse_positive_int<long>(*worker_pool_queue_capacity_raw, "FLOWFORGE_WORKER_POOL_QUEUE_CAPACITY");
+    if (!parsed)
+      return std::unexpected(parsed.error());
+    config.worker_pool_queue_capacity = static_cast<std::size_t>(*parsed);
+  }
+
+  if (auto execution_timeout_raw = getenv_fn("FLOWFORGE_EXECUTION_TIMEOUT_MS")) {
+    auto parsed = parse_positive_int<long>(*execution_timeout_raw, "FLOWFORGE_EXECUTION_TIMEOUT_MS");
+    if (!parsed)
+      return std::unexpected(parsed.error());
+    config.execution_timeout_ms = static_cast<std::size_t>(*parsed);
+  }
+
+  if (auto cors_origin_raw = getenv_fn("FLOWFORGE_CORS_ALLOWED_ORIGIN")) {
+    config.cors_allowed_origin = *cors_origin_raw;
+  }
+
+  if (auto retry_poll_interval_raw = getenv_fn("FLOWFORGE_RETRY_POLL_INTERVAL_MS")) {
+    auto parsed = parse_positive_int<long>(*retry_poll_interval_raw, "FLOWFORGE_RETRY_POLL_INTERVAL_MS");
+    if (!parsed)
+      return std::unexpected(parsed.error());
+    config.retry_poll_interval_ms = std::chrono::milliseconds{*parsed};
+  }
+
+  if (auto retry_batch_size_raw = getenv_fn("FLOWFORGE_RETRY_BATCH_SIZE")) {
+    auto parsed = parse_positive_int<long>(*retry_batch_size_raw, "FLOWFORGE_RETRY_BATCH_SIZE");
+    if (!parsed)
+      return std::unexpected(parsed.error());
+    config.retry_batch_size = static_cast<std::size_t>(*parsed);
+  }
+
   if (auto log_level_raw = getenv_fn("FLOWFORGE_LOG_LEVEL")) {
     config.log_level = log_level_from_string(*log_level_raw, LogLevel::Info);
   }
@@ -132,6 +187,13 @@ Result<AppConfig> AppConfig::load(const GetenvFn& getenv_fn) {
     return std::unexpected(
         make_error(ErrorCode::Configuration,
                    "FLOWFORGE_DATABASE_URL is required when FLOWFORGE_ENV is 'staging' or 'production'"));
+  }
+
+  if (auto pool_size_raw = getenv_fn("FLOWFORGE_DB_POOL_SIZE")) {
+    auto parsed = parse_positive_int<long>(*pool_size_raw, "FLOWFORGE_DB_POOL_SIZE");
+    if (!parsed)
+      return std::unexpected(parsed.error());
+    config.database_pool_size = static_cast<std::size_t>(*parsed);
   }
 
   return config;

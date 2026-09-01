@@ -23,8 +23,10 @@ int http_status_for(ErrorCode code) noexcept {
 }
 
 nlohmann::json to_error_body(const Error& error) {
+  const int status = http_status_for(error.code());
+  const std::string safe_message = status >= 500 ? "an internal error occurred" : error.message();
   return nlohmann::json{
-      {"error", {{"code", std::string(to_string(error.code()))}, {"message", error.message()}}}};
+      {"error", {{"code", std::string(to_string(error.code()))}, {"message", safe_message}}}};
 }
 
 }  // namespace flowforge::server

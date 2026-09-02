@@ -10,6 +10,7 @@ add_executable(flowforge_engine_tests
   domain/execution_result_test.cpp
   domain/execution_test.cpp
   domain/workload_test.cpp
+  domain/user_record_test.cpp
   engine/blocking_queue_test.cpp
   engine/thread_pool_test.cpp
   engine/handler_registry_test.cpp
@@ -29,6 +30,7 @@ add_executable(flowforge_engine_tests
   persistence/in_memory_workload_repository_test.cpp
   services/job_service_test.cpp
   services/workload_service_test.cpp
+  services/user_import_parser_test.cpp
 )
 
 target_link_libraries(flowforge_engine_tests

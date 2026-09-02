@@ -1,11 +1,13 @@
 # FlowForge Architecture Overview
 
-This document describes FlowForge's architecture through Phase 3A (the workload platform
-foundation): what exists, why it's shaped the way it is, and what is deliberately deferred. See
+This document describes FlowForge's architecture through Phase 3B (User Import): what exists, why
+it's shaped the way it is, and what is deliberately deferred. See
 [`execution-model.md`](execution-model.md) for the job execution/retry pipeline in full detail
-(§1–§21) and [`workload-model.md`](workload-model.md) for the Workload/Batch abstraction and User
-Import (Phase 3A) in full detail — this document stays at the component/dependency-direction level.
-It is written to stay accurate as the system grows — when a deferred item is implemented, update the
+(§1–§21), [`workload-model.md`](workload-model.md) for the generic Workload/Batch abstraction
+(Phase 3A), and [`user-import.md`](user-import.md) for User Import (Phase 3B: CSV upload, the
+`/users`/`/workloads/{id}` dashboard pages, and the queued/running/succeeded/failed progress
+breakdown) in full detail — this document stays at the component/dependency-direction level. It is
+written to stay accurate as the system grows — when a deferred item is implemented, update the
 relevant section rather than
 leaving it stale.
 
@@ -119,7 +121,7 @@ Exceptions are still used, deliberately, for programming errors and truly except
 | `IJobRepository` / `IWorkflowRepository` / `IWorkerRepository` | **Real, two implementations.** `InMemoryJobRepository` etc. (process-local, not durable — kept for fast unit tests and as the development-mode default) and `postgres::PostgresJobRepository` etc. (libpqxx-backed, durable). Selected at startup by `persistence::create_repositories` — see §7. |
 | `IWorkflowRepository` writes | **Real for the backend**, but nothing in the HTTP API creates workflow rows yet (`GET /api/v1/workflows` is the only route) — workflow execution remains future scope. `IWorkerRepository` writes are real and used: `LocalWorkerPool` registers one row per worker at startup (Phase 2B-3). |
 | `JobService` (create/get/list/cancel/mark_queued) | **Real**, full validation, real HTTP integration test coverage (`apps/server/tests/http_server_test.cpp`), against both persistence backends. |
-| `domain::Workload`, `IWorkloadRepository`, `WorkloadService`, `handlers::UserProcessHandler` (Phase 3A) | **Real** — see [`workload-model.md`](workload-model.md). `POST`/`GET /api/v1/workloads` creates a workload and dispatches one job per item through the existing `JobService`/`PriorityScheduler` (no new scheduler/executor). Progress is computed live from child `Job` rows, never a separately-persisted counter. CSV/multipart upload and a `/users` dashboard page are not built yet. |
+| `domain::Workload`, `IWorkloadRepository`, `WorkloadService`, `handlers::UserProcessHandler` | **Real** — see [`workload-model.md`](workload-model.md) and [`user-import.md`](user-import.md). `POST`/`GET /api/v1/workloads` creates a workload and dispatches one job per item through the existing `JobService`/`PriorityScheduler` (no new scheduler/executor); `POST /api/v1/workloads/user-imports` (Phase 3B) does the same from an uploaded CSV. Progress (`queued_items`/`running_items`/`completed_items`/`failed_items`) is computed live from child `Job` rows, never a separately-persisted counter. The `/users` and `/workloads/{id}` dashboard pages are real (Phase 3B). |
 | `MetricsRegistry` | **Real, in-memory**, backs `GET /metrics`. Rendered as plain `name value` text, not Prometheus exposition format — see §8. |
 | PostgreSQL schema (`database/migrations/`) | **Real SQL, and now wired up** — `persistence::postgres::*` executes every migrated table via parameterized queries. See §7. |
 | Dashboard pages: Overview, Jobs, Workflows (list), Workers (list), Metrics | **Real HTTP calls** to the running server. |
@@ -150,10 +152,11 @@ Exceptions are still used, deliberately, for programming errors and truly except
   `docs/architecture/overview.md` §9 for the intended seam.
 - **Rate limiting, dead-letter queue processing, graceful drain of in-flight jobs on shutdown** beyond
   the HTTP server's own graceful stop (`App::stop()`).
-- **CSV/multipart workload upload, an executor-side workload-progress callback, asynchronous
-  workload submission, and other concrete workload types** (image processing, email jobs, report
-  generation, webhook processing, data exports) beyond User Import — see
-  [`workload-model.md`](workload-model.md) §9 for the full Phase 3B list and rationale.
+- **An executor-side workload-progress callback, asynchronous workload submission, chunked/streamed
+  CSV upload, server-push progress updates, workload deletion, and other concrete workload types**
+  (image processing, email jobs, report generation, webhook processing, data exports) beyond User
+  Import — see [`workload-model.md`](workload-model.md) §9 and [`user-import.md`](user-import.md)
+  §12 for the full deferred list and rationale.
 
 ## 7. Persistence model and PostgreSQL architecture (Phase 2A)
 

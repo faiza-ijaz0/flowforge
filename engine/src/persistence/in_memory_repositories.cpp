@@ -68,17 +68,23 @@ Result<std::vector<domain::Job>> InMemoryJobRepository::list_by_status(domain::J
 }
 
 Result<std::vector<domain::Job>> InMemoryJobRepository::list_by_workload_id(
-    const infra::WorkloadId& workload_id, std::size_t limit) const {
+    const infra::WorkloadId& workload_id, std::size_t limit, std::size_t offset) const {
   std::lock_guard lock(mutex_);
   std::vector<domain::Job> result;
+  std::size_t skipped = 0;
   for (const auto& id : insertion_order_) {
     if (result.size() >= limit) {
       break;
     }
     const domain::Job& job = jobs_by_id_.at(id);
-    if (job.workload_id().has_value() && *job.workload_id() == workload_id) {
-      result.push_back(job);
+    if (!job.workload_id().has_value() || *job.workload_id() != workload_id) {
+      continue;
     }
+    if (skipped < offset) {
+      ++skipped;
+      continue;
+    }
+    result.push_back(job);
   }
   return result;
 }

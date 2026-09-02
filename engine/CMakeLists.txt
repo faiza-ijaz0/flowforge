@@ -13,6 +13,7 @@ add_library(flowforge_engine STATIC
   src/domain/execution.cpp
   src/domain/execution_result.cpp
   src/domain/workload.cpp
+  src/domain/user_record.cpp
   src/engine/handler_registry.cpp
   src/engine/priority_scheduler.cpp
   src/engine/job_executor.cpp
@@ -27,6 +28,7 @@ add_library(flowforge_engine STATIC
   src/persistence/repository_factory.cpp
   src/services/job_service.cpp
   src/services/workload_service.cpp
+  src/services/user_import_parser.cpp
 )
 
 add_library(flowforge::engine ALIAS flowforge_engine)

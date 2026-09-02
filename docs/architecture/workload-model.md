@@ -1,11 +1,14 @@
-# FlowForge Workload Model (Phase 3A)
+# FlowForge Workload Model (Phase 3A / Phase 3B)
 
 This document describes the Workload/Batch abstraction introduced in Phase 3A: what a Workload is,
-why it exists, how it relates to `domain::Job`, its status lifecycle, and how User Import (the
-first concrete workload type) is implemented on top of it. It complements
-[`overview.md`](overview.md) (component/dependency-direction picture) and
+why it exists, how it relates to `domain::Job`, and its status lifecycle. It complements
+[`overview.md`](overview.md) (component/dependency-direction picture),
 [`execution-model.md`](execution-model.md) (the job execution pipeline a workload's jobs run
-through unchanged) rather than replacing either.
+through unchanged), and [`user-import.md`](user-import.md) (Phase 3B: the CSV User Import feature
+built on top of this abstraction, including the full progress-calculation/API/security detail for
+that feature) rather than replacing any of them. Sections below note where Phase 3B extended
+something Phase 3A originally shipped; see `user-import.md` for the full detail on each such
+extension rather than duplicating it here.
 
 ## 1. What a Workload is, and why it exists
 
@@ -18,8 +21,11 @@ that unit's aggregate progress, not poll N individual jobs by hand.
 A `Workload` is that logical grouping: a batch of related jobs submitted together, with:
 
 - `id`, `type` (see §4, "Why type == job_type"), `total_items`
-- `completed_items`, `failed_items`, `status` -- all three **computed on demand** from the
-  workload's child `Job` rows, never separately-persisted counters (see §3)
+- `queued_items`, `running_items`, `completed_items`, `failed_items`, `status` -- all five
+  **computed on demand** from the workload's child `Job` rows, never separately-persisted counters
+  (see §3; `queued_items`/`running_items` were added in Phase 3B -- see
+  [`user-import.md`](user-import.md) §6 -- to give the dashboard a real
+  queued/running/succeeded/failed breakdown instead of only completed/failed)
 - `created_at`, `updated_at`
 
 It is deliberately generic: nothing in `domain::Workload`, `IWorkloadRepository`, or
@@ -77,16 +83,20 @@ Pending -> Queued -> Running -> Succeeded
   - zero items -> handled explicitly (Succeeded)
 
 The derivation is a pure function, `domain::derive_workload_status(total_items, completed_items,
-failed_items)`, plus a classifier, `domain::classify_job_status_for_workload(JobStatus)`, that maps
-each child job's current status into one of three buckets:
+failed_items)` -- unchanged since Phase 3A, since `queued_items`/`running_items` (Phase 3B) are
+purely additive display detail it never needed. It's fed by a classifier,
+`domain::classify_job_status_for_workload(JobStatus)`, that maps each child job's current status
+into one of four buckets (Phase 3B extended this from three -- `Active` was split into `Queued`/
+`Running` so the dashboard can render a real breakdown; see [`user-import.md`](user-import.md) §6):
 
 | `JobStatus`                                   | Bucket      | Why |
 |---|---|---|
-| `Succeeded`                                   | Completed   | Terminal and successful. |
+| `Succeeded`                                   | Succeeded   | Terminal and successful. |
 | `Cancelled`, `DeadLetter`                     | Failed      | Terminal and unsuccessful. |
-| `Pending`, `Queued`, `Running`, `Retrying`, **`Failed`** | Active | Not yet decided. |
+| `Running`                                     | Running     | Actively executing right now. |
+| `Pending`, `Queued`, `Retrying`, **`Failed`** (attempt) | Queued | Not currently executing; will run (again) soon. |
 
-`JobStatus::Failed` is deliberately in the *Active* bucket, not *Failed*: a failed **attempt** is
+`JobStatus::Failed` is deliberately in the *Queued* bucket, not *Failed*: a failed **attempt** is
 not terminal by itself (`domain::is_terminal(JobStatus::Failed) == false`) -- `RetryDispatcher` may
 still retry it. It only becomes a workload-level failure once the job reaches `Cancelled` or
 `DeadLetter` (retries exhausted).
@@ -135,30 +145,10 @@ would need that mapping added explicitly then, not preemptively now.
 `handlers::UserProcessHandler` (`engine/include/flowforge/handlers/user_process_handler.hpp`),
 registered under job type `"user.process"` (`register_builtin_handlers`). A caller creates a
 `user.process` workload with one item per imported user; each item becomes one `user.process` job.
-The handler validates/normalizes one user record deterministically:
-
-```
-Input:  {"name": "  Alice Khan ", "email": " ALICE@EXAMPLE.COM "}
-Output: {"name": "Alice Khan", "email": "alice@example.com", "valid": true}
-```
-
-- `name`: required, trimmed, <= 200 chars, must not be blank after trimming.
-- `email`: required, trimmed + lowercased, must look structurally like an email (exactly one `@`,
-  non-empty local part, domain part containing an interior `.`), <= 320 chars.
-- `phone`: optional, trimmed, <= 32 chars.
-- `metadata`: **not parsed in this phase** -- see §8, "Known limitations".
-
-A missing/blank required field or a malformed email is a hard, non-retryable rejection (a `Result`
-error, mirroring `DelayHandler`'s convention for a structurally-invalid payload -- see
-`job_handler.hpp`'s class comment on the `Result`-error-vs-`ExecutionResult::failure` split).
-Cooperative cancellation, checked once before any work starts, is the handler's only
-`ExecutionResult::failure` path; it is also non-retryable, since this handler has no external I/O
-and would fail identically on a retry.
-
-The handler hand-parses its own small, flat JSON shape rather than depending on `nlohmann::json`:
-the engine has zero JSON library dependency by design (see `overview.md`, "Dependency direction")
--- the same reason `postgres_job_repository.cpp` hand-parses `retry_policy` JSON. It supports only
-`\"`/`\\` string escapes; a payload using any other JSON escape sequence is rejected as invalid.
+The handler validates/normalizes one user record deterministically (trim `name`, trim+lowercase
+`email`, bounds/shape checks) via `domain::validate_and_normalize_user_record` -- see
+[`user-import.md`](user-import.md) §4 for the full validation rules, why that function is shared
+with Phase 3B's CSV import path, and the exact JSON parsing/escaping details.
 
 **Partial failure during dispatch.** If item 3 of 10 fails to schedule (its `job_type` momentarily
 has no registered handler, or the scheduler is at capacity), the workload and the other 9 jobs are
@@ -196,32 +186,32 @@ CREATE INDEX idx_jobs_workload_id ON jobs (workload_id);
 | Limit | Value | Rationale |
 |---|---|---|
 | Workload `type` length | 128 chars | Matches `JobService`'s existing `kMaxJobTypeLength` (`type` doubles as `job_type` -- see §4). |
-| Items per workload | 1000 | Comfortably covers the stated product range ("50, 100, 500+ users") with headroom, while bounding how long one synchronous HTTP request that creates+schedules one Job per item can hold the request thread (see §9 -- larger bulk imports are Phase 3B's chunked/async concern). |
+| Items per workload | 1000 | Comfortably covers the stated product range ("50, 100, 500+ users") with headroom, while bounding how long one synchronous HTTP request that creates+schedules one Job per item can hold the request thread. Identical to Phase 3B's `services::kMaxUserImportRows` -- see [`user-import.md`](user-import.md) §2.1. |
 | Item payload size | 64 KiB | A single workload item (one user-import row) is expected to be a small, flat record, not an arbitrary job payload -- smaller than `JobService`'s general 256 KiB `kMaxPayloadBytes`. |
 | `user.process` payload size | 16 KiB | Tighter still: a flat `{name, email, phone}` record has no legitimate reason to approach even the 64 KiB workload-item bound. |
 | `name` length | 200 chars | Generous for a real person's name with headroom, not unbounded. |
 | `email` length | 320 chars | RFC 5321's upper bound on a full email address. |
 | `phone` length | 32 chars | Covers any real-world phone number format (with extension) with headroom. |
 
-## 7. API surface (Phase 3A)
+## 7. API surface
 
 ```
-POST /api/v1/workloads        create a workload + its item jobs
-GET  /api/v1/workloads        list workloads (?limit=&offset=)
-GET  /api/v1/workloads/{id}   fetch a single workload (live-computed progress)
+POST /api/v1/workloads             create a workload from a JSON `items` array (Phase 3A)
+GET  /api/v1/workloads             list workloads (?limit=&offset=)
+GET  /api/v1/workloads/{id}        fetch a single workload (live-computed progress)
+GET  /api/v1/workloads/{id}/items  bounded, paginated per-item results (Phase 3B)
+POST /api/v1/workloads/user-imports  CSV upload -> workload (Phase 3B)
 ```
 
 Request/response shapes, validation, and error-sanitization follow the exact conventions
 `POST /api/v1/jobs` already established (`apps/server/src/http/routes/job_routes.cpp`): shape
 validation in `json/workload_json.cpp`, business validation in `WorkloadService`, generic 5xx
 messages via the existing, shared `http_status_for`/`to_error_body` (`http/error_response.cpp`) --
-nothing about error handling was reinvented for this endpoint.
-
-**Deliberately not built in this phase**: a CSV/multipart upload endpoint. `POST /api/v1/workloads`
-accepts a JSON `items` array (each element becomes one item's opaque payload string, mirroring how
-`parse_create_job_request` already handles a job's `payload` field). This establishes the clean
-workload API contract first; translating an uploaded CSV file into that same `items` array is
-Phase 3B's concern (see §9).
+nothing about error handling was reinvented for either endpoint. `POST /api/v1/workloads` accepts a
+JSON `items` array (each element becomes one item's opaque payload string, mirroring how
+`parse_create_job_request` already handles a job's `payload` field) -- still the only way to create
+a workload of a type other than `user.process`. See [`user-import.md`](user-import.md) §3 for the
+CSV-upload endpoint's full request/response shape.
 
 ## 8. Security / quality review notes
 
@@ -241,48 +231,49 @@ Phase 3B's concern (see §9).
   classifying each of `total_items`' worth of child-job rows exactly once.
 - **Known limitation**: `list_workloads`/`GET /api/v1/workloads` issues one `list_by_workload_id`
   query per workload in the returned page (bounded, indexed, but still N+1 for a page of N
-  workloads). Acceptable for this foundation phase's scale; a persisted/cached progress snapshot
-  (updated via a future `JobExecutor` callback -- see §9) would remove it if it becomes a real cost.
+  workloads). Acceptable at this phase's scale; a persisted/cached progress snapshot (updated via a
+  future `JobExecutor` callback -- see §9) would remove it if it becomes a real cost.
 - **Known limitation**: `UserProcessHandler`'s hand-rolled JSON string extraction supports only
   `\"`/`\\` escapes and does not parse `metadata` at all -- a payload relying on either is rejected
   or has that data silently ignored. Both are explicitly bounded-scope decisions (§4), not
-  oversights, made to avoid adding a JSON library dependency to `engine/` for this phase.
+  oversights, made to avoid adding a JSON library dependency to `engine/` for this phase. See
+  [`user-import.md`](user-import.md) §11 for Phase 3B's equivalent CSV-side limitations.
 - **Known limitation**: email validation is structural (`looks_like_email`), not RFC 5322-complete
   -- sufficient to reject obviously-malformed input, not a full validator.
 
-## 9. Deferred to Phase 3B
+## 9. Deferred (updated for Phase 3B)
 
-- **CSV/multipart upload endpoint.** Translating an uploaded file into `POST /api/v1/workloads`'s
-  `items` array -- chunked/streamed for large files rather than one synchronous JSON body.
-- **`JobExecutor` -> `WorkloadRepository` progress callback.** This phase computes progress by
-  querying child jobs on every read (§3); a future phase could add a persisted/cached counter,
+Phase 3B implemented the CSV/multipart upload endpoint, the `/users` and `/workloads/{id}` dashboard
+pages, and the `queued_items`/`running_items` progress breakdown originally deferred here -- see
+[`user-import.md`](user-import.md) for all of that. What remains deferred, carried forward:
+
+- **`JobExecutor` -> `WorkloadRepository` progress callback.** This phase (still) computes progress
+  by querying child jobs on every read (§3); a future phase could add a persisted/cached counter,
   updated by `JobExecutor` when a job with a non-null `workload_id` reaches a terminal status, if
   the read-time query cost (§8) becomes a real problem at scale. This is an additive change to
   `JobExecutor` (a hot, heavily-tested, concurrency-sensitive class) deliberately deferred rather
-  than made speculatively in this phase.
-- **Asynchronous workload submission.** `create_workload()` dispatches every item's job
-  synchronously within the HTTP request (§4); a future phase might instead persist the workload
-  immediately (`Pending`), respond, and dispatch items in the background (`Queued` becomes
-  observable -- see §3) for very large imports where the 1000-item bound (§6) is insufficient.
-  Chunked/streamed CSV upload (above) would likely motivate this together.
+  than made speculatively.
+- **Asynchronous workload submission.** `create_workload()`/`create_user_import_workload()` both
+  dispatch every item's job synchronously within the HTTP request; a future phase might instead
+  persist the workload immediately (`Pending`), respond, and dispatch items in the background
+  (`Queued` becomes observable -- see §3) for very large imports where the 1000-item bound (§6) is
+  insufficient. See [`user-import.md`](user-import.md) §12 for the rest of Phase 3B's own deferred
+  list (chunked upload, server-push progress, workload deletion, other workload types).
 - **`DELETE /api/v1/workloads/{id}`.** No delete path exists yet; §5's `ON DELETE SET NULL` choice
   is forward-looking, not yet exercised.
 - **Other concrete workload types** (image processing, email jobs, report generation, webhook
   processing, data exports) -- the abstraction (§1) is generic; only `user.process` is implemented.
-- **`/users` dashboard UI.** Only the API client types (`packages/shared/src/workload.ts`,
-  `apps/dashboard/src/lib/api-client.ts`) were added this phase -- no page consumes them yet (see
-  `overview.md`'s "What's real vs. interface-only" table).
 
-## 10. What's real vs. interface-only (Phase 3A)
+## 10. What's real vs. interface-only
 
 | Area | Status |
 |---|---|
-| `domain::Workload`, `WorkloadStatus`, `derive_workload_status`, `classify_job_status_for_workload` | **Real**, unit tested. |
+| `domain::Workload`, `WorkloadStatus`, `derive_workload_status`, `classify_job_status_for_workload` | **Real**, unit tested. Four-bucket progress (`queued_items`/`running_items`/`completed_items`/`failed_items`) since Phase 3B. |
 | `IWorkloadRepository` | **Real, two implementations** (`InMemoryWorkloadRepository`, `postgres::PostgresWorkloadRepository`), selected the same way every other repository is (`persistence::create_repositories`). |
-| `Job::workload_id()` / `IJobRepository::list_by_workload_id` | **Real**, both persistence backends, additive to the existing `Job`/`IJobRepository` contract. |
-| `WorkloadService` | **Real** -- creates workloads, creates+schedules each item's job via the existing `JobService`/`IScheduler`, computes live progress. |
-| `handlers::UserProcessHandler` | **Real (Phase 3A)**, registered as `"user.process"`. Deterministic validation/normalization, no external I/O. |
-| `POST`/`GET /api/v1/workloads` | **Real**, full HTTP integration test coverage. |
-| CSV/multipart upload | **Not built** -- see §9. |
+| `Job::workload_id()` / `IJobRepository::list_by_workload_id` | **Real**, both persistence backends. `list_by_workload_id` gained pagination (`offset`) in Phase 3B. |
+| `WorkloadService` | **Real** -- creates workloads (JSON items or CSV, see `user-import.md`), creates+schedules each item's job via the existing `JobService`/`IScheduler`, computes live progress, paginated item retrieval (Phase 3B). |
+| `handlers::UserProcessHandler` | **Real**, registered as `"user.process"`. Deterministic validation/normalization (now shared with the CSV import path via `domain::validate_and_normalize_user_record`, Phase 3B), no external I/O. |
+| `POST`/`GET /api/v1/workloads`, `GET /api/v1/workloads/{id}/items` | **Real**, full HTTP integration test coverage. |
+| `POST /api/v1/workloads/user-imports` (CSV upload) | **Real (Phase 3B)** -- see `user-import.md`. |
+| `/users`, `/workloads/{id}` dashboard pages | **Real (Phase 3B)** -- see `user-import.md` §10. |
 | `JobExecutor` progress callback | **Not built** -- progress is computed on read (§3), not pushed on write. |
-| `/users` dashboard page | **Not built** -- only API client types exist (§9). |

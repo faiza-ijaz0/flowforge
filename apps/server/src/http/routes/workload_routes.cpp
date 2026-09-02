@@ -61,11 +61,7 @@ void register_workload_routes(httplib::Server& server,
 
         nlohmann::json items = nlohmann::json::array();
         for (const auto& item : created->items) {
-          nlohmann::json entry{{"job_id", item.job_id.value()}, {"scheduled", item.scheduled}};
-          if (item.reason) {
-            entry["reason"] = *item.reason;
-          }
-          items.push_back(std::move(entry));
+          items.push_back(to_json(item));
         }
 
         nlohmann::json response_body = to_json(created->workload);
@@ -73,6 +69,35 @@ void register_workload_routes(httplib::Server& server,
         res.status = 201;
         res.set_content(response_body.dump(), "application/json");
       });
+
+  // Phase 3B: bulk user import from an uploaded CSV file. A distinct,
+  // separately-registered path (not a query param on POST
+  // /api/v1/workloads) -- see docs/architecture/user-import.md, "API
+  // changes" -- multipart/form-data with a single "file" field, mirroring
+  // how the rest of this phase reuses existing conventions rather than
+  // inventing a parallel API shape.
+  server.Post("/api/v1/workloads/user-imports",
+              [workload_service](const httplib::Request& req, httplib::Response& res) {
+                if (!req.is_multipart_form_data()) {
+                  write_error(res, make_error(ErrorCode::Validation,
+                                              "request must be multipart/form-data with a 'file' field"));
+                  return;
+                }
+                if (!req.has_file("file")) {
+                  write_error(res, make_error(ErrorCode::Validation, "missing required 'file' field"));
+                  return;
+                }
+
+                const auto& file = req.get_file_value("file");
+                auto imported = workload_service->create_user_import_workload(file.content);
+                if (!imported) {
+                  write_error(res, imported.error());
+                  return;
+                }
+
+                res.status = 201;
+                res.set_content(to_json(*imported).dump(), "application/json");
+              });
 
   server.Get("/api/v1/workloads", [workload_service](const httplib::Request& req, httplib::Response& res) {
     const std::size_t limit = parse_size_param(req, "limit", 50);
@@ -99,6 +124,30 @@ void register_workload_routes(httplib::Server& server,
                }
                res.set_content(to_json(*workload).dump(), "application/json");
              });
+
+  // Bounded, paginated per-item detail view -- see
+  // docs/architecture/user-import.md, "Bounded item retrieval". Mirrors
+  // `GET /api/v1/jobs/{id}/attempts`'s additive-endpoint convention
+  // (job_routes.cpp).
+  server.Get("/api/v1/workloads/:id/items", [workload_service](const httplib::Request& req,
+                                                               httplib::Response& res) {
+    const std::size_t limit = parse_size_param(req, "limit", 50);
+    const std::size_t offset = parse_size_param(req, "offset", 0);
+
+    auto page = workload_service->list_items(req.path_params.at("id"), limit, offset);
+    if (!page) {
+      write_error(res, page.error());
+      return;
+    }
+
+    nlohmann::json items = nlohmann::json::array();
+    for (const auto& job : page->jobs) {
+      items.push_back(to_json_workload_item(job));
+    }
+    res.set_content(
+        nlohmann::json{{"items", items}, {"total", page->total}, {"limit", limit}, {"offset", offset}}.dump(),
+        "application/json");
+  });
 }
 
 }  // namespace flowforge::server

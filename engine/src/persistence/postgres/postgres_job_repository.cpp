@@ -115,7 +115,7 @@ constexpr pqxx::zview kSelectJobsByWorkloadId =
     "SELECT id, queue_name, payload #>> '{}' AS payload, priority, status, attempt_count, "
     "retry_policy::text AS retry_policy, last_error, extract(epoch from created_at) AS created_at_epoch, "
     "extract(epoch from updated_at) AS updated_at_epoch, job_type, workload_id FROM jobs "
-    "WHERE workload_id = $1 ORDER BY created_at ASC LIMIT $2";
+    "WHERE workload_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3";
 
 constexpr pqxx::zview kUpdateJob =
     "UPDATE jobs SET queue_name = $2, payload = to_jsonb($3::text), priority = $4, status = $5, "
@@ -309,15 +309,16 @@ Result<std::vector<domain::Job>> PostgresJobRepository::list_by_status(domain::J
 }
 
 Result<std::vector<domain::Job>> PostgresJobRepository::list_by_workload_id(
-    const infra::WorkloadId& workload_id, std::size_t limit) const {
+    const infra::WorkloadId& workload_id, std::size_t limit, std::size_t offset) const {
   try {
     auto conn = pool_->acquire();
     if (!conn) {
       return std::unexpected(conn.error());
     }
     pqxx::work txn(**conn);
-    auto result = txn.exec_params(kSelectJobsByWorkloadId,
-                                  pqxx::params{workload_id.value(), static_cast<long long>(limit)});
+    auto result = txn.exec_params(
+        kSelectJobsByWorkloadId,
+        pqxx::params{workload_id.value(), static_cast<long long>(limit), static_cast<long long>(offset)});
     txn.commit();
 
     std::vector<domain::Job> jobs;

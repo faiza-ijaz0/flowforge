@@ -13,6 +13,8 @@ TEST(WorkloadTest, NewWorkloadStartsPendingWithZeroProgress) {
   Workload workload(infra::WorkloadId::generate(), "user.process", 3, fixed_time());
   EXPECT_EQ(workload.status(), WorkloadStatus::Pending);
   EXPECT_EQ(workload.total_items(), 3u);
+  EXPECT_EQ(workload.queued_items(), 0u);
+  EXPECT_EQ(workload.running_items(), 0u);
   EXPECT_EQ(workload.completed_items(), 0u);
   EXPECT_EQ(workload.failed_items(), 0u);
   EXPECT_EQ(workload.created_at(), fixed_time());
@@ -37,12 +39,14 @@ TEST(WorkloadTest, RestoreReconstructsPersistedRowWithDefaultProgress) {
 
 TEST(WorkloadTest, ApplyProgressRecomputesStatus) {
   Workload workload(infra::WorkloadId::generate(), "user.process", 2, fixed_time());
-  workload.apply_progress(1, 0);
+  workload.apply_progress(/*queued_items=*/1, /*running_items=*/0, /*completed_items=*/1, /*failed_items=*/0);
+  EXPECT_EQ(workload.queued_items(), 1u);
+  EXPECT_EQ(workload.running_items(), 0u);
   EXPECT_EQ(workload.completed_items(), 1u);
   EXPECT_EQ(workload.failed_items(), 0u);
   EXPECT_EQ(workload.status(), WorkloadStatus::Running);
 
-  workload.apply_progress(2, 0);
+  workload.apply_progress(/*queued_items=*/0, /*running_items=*/0, /*completed_items=*/2, /*failed_items=*/0);
   EXPECT_EQ(workload.status(), WorkloadStatus::Succeeded);
 }
 
@@ -65,8 +69,8 @@ TEST(DeriveWorkloadStatusTest, AllTerminalWithAnyFailureIsFailed) {
   EXPECT_EQ(derive_workload_status(5, 0, 5), WorkloadStatus::Failed);
 }
 
-TEST(ClassifyJobStatusForWorkloadTest, SucceededIsCompleted) {
-  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Succeeded), WorkloadItemOutcome::Completed);
+TEST(ClassifyJobStatusForWorkloadTest, SucceededIsSucceeded) {
+  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Succeeded), WorkloadItemOutcome::Succeeded);
 }
 
 TEST(ClassifyJobStatusForWorkloadTest, CancelledAndDeadLetterAreFailed) {
@@ -74,14 +78,18 @@ TEST(ClassifyJobStatusForWorkloadTest, CancelledAndDeadLetterAreFailed) {
   EXPECT_EQ(classify_job_status_for_workload(JobStatus::DeadLetter), WorkloadItemOutcome::Failed);
 }
 
-TEST(ClassifyJobStatusForWorkloadTest, InFlightAndRetryableStatesAreActive) {
-  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Pending), WorkloadItemOutcome::Active);
-  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Queued), WorkloadItemOutcome::Active);
-  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Running), WorkloadItemOutcome::Active);
-  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Retrying), WorkloadItemOutcome::Active);
+TEST(ClassifyJobStatusForWorkloadTest, RunningIsRunning) {
+  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Running), WorkloadItemOutcome::Running);
+}
+
+TEST(ClassifyJobStatusForWorkloadTest, WaitingAndRetryableStatesAreQueued) {
+  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Pending), WorkloadItemOutcome::Queued);
+  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Queued), WorkloadItemOutcome::Queued);
+  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Retrying), WorkloadItemOutcome::Queued);
   // A failed *attempt* is not yet a workload-level failure -- it may still
-  // be retried (see classify_job_status_for_workload's doc comment).
-  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Failed), WorkloadItemOutcome::Active);
+  // be retried (see classify_job_status_for_workload's doc comment), so it
+  // is grouped with "waiting for its turn" rather than "Failed".
+  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Failed), WorkloadItemOutcome::Queued);
 }
 
 TEST(WorkloadStatusStringTest, RoundTripsThroughAllValues) {

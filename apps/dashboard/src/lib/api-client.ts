@@ -9,7 +9,9 @@ import type {
   ListJobsResponse,
   ListWorkersResponse,
   ListWorkflowsResponse,
+  ListWorkloadItemsResponse,
   ListWorkloadsResponse,
+  UserImportResponse,
   Workload,
 } from "@flowforge/shared";
 
@@ -33,14 +35,10 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function handleResponse<T>(fetchPromise: Promise<Response>): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${apiBaseUrl}${path}`, {
-      ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
-      cache: "no-store",
-    });
+    response = await fetchPromise;
   } catch {
     throw new ApiError(
       `Could not reach FlowForge API at ${apiBaseUrl}. Is the server running?`,
@@ -61,6 +59,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return handleResponse<T>(
+    fetch(`${apiBaseUrl}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      cache: "no-store",
+    }),
+  );
+}
+
+/**
+ * Like request(), but for a `multipart/form-data` body (file upload): the
+ * browser must set its own `Content-Type` header (with the multipart
+ * boundary) from the `FormData` body -- explicitly setting
+ * "application/json" here, as request() does, would send the wrong
+ * content type and break server-side multipart parsing.
+ */
+function requestForm<T>(path: string, formData: FormData): Promise<T> {
+  return handleResponse<T>(fetch(`${apiBaseUrl}${path}`, { method: "POST", body: formData, cache: "no-store" }));
+}
+
 export const apiClient = {
   health: () => request<{ status: string }>("/health"),
   ready: () => request<{ status: string; environment: string; uptime_seconds: number }>("/ready"),
@@ -79,11 +98,21 @@ export const apiClient = {
   listWorkers: () => request<ListWorkersResponse>("/api/v1/workers"),
 
   // Phase 3A: the workload platform foundation (see
-  // docs/architecture/workload-model.md). No /users page consumes these
-  // yet -- see that doc, "Deferred to Phase 3B".
+  // docs/architecture/workload-model.md).
   createWorkload: (input: CreateWorkloadInput) =>
     request<CreateWorkloadResponse>("/api/v1/workloads", { method: "POST", body: JSON.stringify(input) }),
   getWorkload: (id: string) => request<Workload>(`/api/v1/workloads/${encodeURIComponent(id)}`),
   listWorkloads: (limit = 50, offset = 0) =>
     request<ListWorkloadsResponse>(`/api/v1/workloads?limit=${limit}&offset=${offset}`),
+
+  // Phase 3B: User Import (see docs/architecture/user-import.md).
+  createUserImportWorkload: (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file, file.name);
+    return requestForm<UserImportResponse>("/api/v1/workloads/user-imports", formData);
+  },
+  getWorkloadItems: (id: string, limit = 50, offset = 0) =>
+    request<ListWorkloadItemsResponse>(
+      `/api/v1/workloads/${encodeURIComponent(id)}/items?limit=${limit}&offset=${offset}`,
+    ),
 };

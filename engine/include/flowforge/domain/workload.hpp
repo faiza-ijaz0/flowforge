@@ -47,16 +47,23 @@ enum class WorkloadStatus : std::uint8_t {
 [[nodiscard]] WorkloadStatus derive_workload_status(std::size_t total_items, std::size_t completed_items,
                                                     std::size_t failed_items) noexcept;
 
-/// The three buckets a child job's `JobStatus` is classified into for
+/// The four buckets a child job's `JobStatus` is classified into for
 /// workload progress aggregation (see `classify_job_status_for_workload`).
-enum class WorkloadItemOutcome : std::uint8_t { Active, Completed, Failed };
+/// `Queued` and `Running` are both "not yet terminal"; kept as separate
+/// buckets (Phase 3B) rather than one combined "Active" bucket so the UI
+/// can render a real `queued`/`running`/`succeeded`/`failed` breakdown
+/// (see docs/architecture/user-import.md, "Progress calculation") instead
+/// of only a two-way completed/failed split (Phase 3A).
+enum class WorkloadItemOutcome : std::uint8_t { Queued, Running, Succeeded, Failed };
 
 /// Classifies a child job's current `JobStatus` for workload aggregation:
-///   - `Succeeded`                        -> Completed
-///   - `Cancelled` / `DeadLetter`          -> Failed (both are terminal and unsuccessful)
-///   - everything else (`Pending`/`Queued`/`Running`/`Failed`/`Retrying`)  -> Active
+///   - `Pending` / `Queued` / `Retrying`   -> Queued  (not currently executing; will run (again) soon)
+///   - `Running`                           -> Running (actively executing right now)
+///   - `Succeeded`                         -> Succeeded
+///   - `Cancelled` / `DeadLetter`          -> Failed  (both are terminal and unsuccessful)
 ///
-/// `JobStatus::Failed` is deliberately `Active`, not `Failed`, here: a
+/// `JobStatus::Failed` (an attempt that failed but may still retry) and
+/// `JobStatus::Retrying` are deliberately `Queued`, not `Failed`, here: a
 /// failed *attempt* is not terminal by itself (see `domain::is_terminal
 /// (JobStatus)`) -- `RetryDispatcher` may still retry it, so it is not yet
 /// a workload-level failure until the job reaches `Cancelled`/`DeadLetter`
@@ -91,20 +98,28 @@ class Workload {
   [[nodiscard]] const infra::WorkloadId& id() const noexcept { return id_; }
   [[nodiscard]] const std::string& type() const noexcept { return type_; }
   [[nodiscard]] std::size_t total_items() const noexcept { return total_items_; }
+  [[nodiscard]] std::size_t queued_items() const noexcept { return queued_items_; }
+  [[nodiscard]] std::size_t running_items() const noexcept { return running_items_; }
   [[nodiscard]] std::size_t completed_items() const noexcept { return completed_items_; }
   [[nodiscard]] std::size_t failed_items() const noexcept { return failed_items_; }
   [[nodiscard]] WorkloadStatus status() const noexcept { return status_; }
   [[nodiscard]] infra::TimePoint created_at() const noexcept { return created_at_; }
   [[nodiscard]] infra::TimePoint updated_at() const noexcept { return updated_at_; }
 
-  /// Applies a freshly-computed progress snapshot: sets completed_items()/
-  /// failed_items() and re-derives status() via derive_workload_status().
-  /// Deliberately does not touch updated_at() -- see class comment:
-  /// progress is computed on demand, not persisted, so there is no
-  /// meaningful "row last written" moment to advance here; updated_at()
-  /// continues to reflect the persisted row (which this phase never
-  /// mutates after creation).
-  void apply_progress(std::size_t completed_items, std::size_t failed_items) noexcept {
+  /// Applies a freshly-computed progress snapshot (Phase 3B: all four
+  /// `WorkloadItemOutcome` buckets, not just completed/failed) and
+  /// re-derives status() via derive_workload_status() (which only ever
+  /// needed completed/failed -- see that function's doc comment; queued/
+  /// running are purely additive display detail, invisible to status
+  /// derivation). Deliberately does not touch updated_at() -- see class
+  /// comment: progress is computed on demand, not persisted, so there is
+  /// no meaningful "row last written" moment to advance here;
+  /// updated_at() continues to reflect the persisted row (which this
+  /// phase never mutates after creation).
+  void apply_progress(std::size_t queued_items, std::size_t running_items, std::size_t completed_items,
+                      std::size_t failed_items) noexcept {
+    queued_items_ = queued_items;
+    running_items_ = running_items;
     completed_items_ = completed_items;
     failed_items_ = failed_items;
     status_ = derive_workload_status(total_items_, completed_items_, failed_items_);
@@ -123,6 +138,8 @@ class Workload {
   infra::WorkloadId id_;
   std::string type_;
   std::size_t total_items_;
+  std::size_t queued_items_ = 0;
+  std::size_t running_items_ = 0;
   std::size_t completed_items_ = 0;
   std::size_t failed_items_ = 0;
   WorkloadStatus status_ = WorkloadStatus::Pending;

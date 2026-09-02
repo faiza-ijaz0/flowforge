@@ -28,7 +28,8 @@ class InMemoryJobRepository final : public IJobRepository {
   [[nodiscard]] Result<std::vector<domain::Job>> list_by_status(domain::JobStatus status,
                                                                 std::size_t limit) const override;
   [[nodiscard]] Result<std::vector<domain::Job>> list_by_workload_id(const infra::WorkloadId& workload_id,
-                                                                     std::size_t limit) const override;
+                                                                     std::size_t limit,
+                                                                     std::size_t offset) const override;
 
  private:
   mutable std::mutex mutex_;

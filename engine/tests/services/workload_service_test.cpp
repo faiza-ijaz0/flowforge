@@ -61,7 +61,7 @@ TEST_F(WorkloadServiceTest, CreateWorkloadCreatesAndAssociatesJobs) {
     EXPECT_FALSE(outcome.job_id.empty());
   }
 
-  auto jobs = job_repository->list_by_workload_id(result->workload.id(), 10);
+  auto jobs = job_repository->list_by_workload_id(result->workload.id(), 10, 0);
   ASSERT_TRUE(jobs.has_value());
   ASSERT_EQ(jobs->size(), 2u);
   for (const auto& job : *jobs) {
@@ -150,15 +150,18 @@ TEST_F(WorkloadServiceTest, GetWorkloadComputesProgressFromChildJobStatuses) {
 
   auto fetched = service->get_workload(workload.id().value());
   ASSERT_TRUE(fetched.has_value());
+  EXPECT_EQ(fetched->queued_items(), 0u);
+  EXPECT_EQ(fetched->running_items(), 1u);
   EXPECT_EQ(fetched->completed_items(), 1u);
   EXPECT_EQ(fetched->failed_items(), 1u);
-  EXPECT_EQ(fetched->status(), domain::WorkloadStatus::Running);  // still_running is Active.
+  EXPECT_EQ(fetched->status(), domain::WorkloadStatus::Running);  // still_running is not yet terminal.
 
   still_running.transition_to(domain::JobStatus::Succeeded, std::chrono::system_clock::now());
   ASSERT_TRUE(job_repository->update(still_running).has_value());
 
   auto fetched_again = service->get_workload(workload.id().value());
   ASSERT_TRUE(fetched_again.has_value());
+  EXPECT_EQ(fetched_again->running_items(), 0u);
   EXPECT_EQ(fetched_again->completed_items(), 2u);
   EXPECT_EQ(fetched_again->failed_items(), 1u);
   EXPECT_EQ(fetched_again->status(), domain::WorkloadStatus::Failed);
@@ -184,6 +187,84 @@ TEST_F(WorkloadServiceTest, ListWorkloadsReturnsEnrichedProgress) {
     EXPECT_EQ(workload.total_items(), 1u);
     EXPECT_EQ(workload.status(), domain::WorkloadStatus::Running);
   }
+}
+
+// --- CSV user import (Phase 3B) -------------------------------------------
+
+TEST_F(WorkloadServiceTest, CreateUserImportWorkloadCreatesJobsForValidRowsOnly) {
+  const std::string csv =
+      "name,email\n"
+      "Alice Khan,ALICE@example.com\n"
+      ",blank-name@example.com\n"
+      "Bob,bob@example.com\n";
+  auto result = service->create_user_import_workload(csv);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_EQ(result->total_rows, 3u);
+  EXPECT_EQ(result->valid_rows, 2u);
+  EXPECT_EQ(result->invalid_rows, 1u);
+  ASSERT_EQ(result->rejected_rows.size(), 1u);
+  EXPECT_EQ(result->rejected_rows[0].row_number, 2u);
+  EXPECT_EQ(result->workload.total_items(), 2u);
+  EXPECT_EQ(result->items.size(), 2u);
+
+  auto jobs = job_repository->list_by_workload_id(result->workload.id(), 10, 0);
+  ASSERT_TRUE(jobs.has_value());
+  ASSERT_EQ(jobs->size(), 2u);
+  for (const auto& job : *jobs) {
+    EXPECT_EQ(job.job_type(), "user.process");
+    // The normalized (trimmed/lowercased) record is what gets serialized
+    // as the Job's payload -- see domain::serialize_user_record_as_job_payload.
+    EXPECT_NE(job.payload().find("\"name\""), std::string::npos);
+    EXPECT_NE(job.payload().find("\"email\""), std::string::npos);
+  }
+}
+
+TEST_F(WorkloadServiceTest, CreateUserImportWorkloadRejectsStructurallyInvalidCsvWithoutCreatingAWorkload) {
+  auto result = service->create_user_import_workload("");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::Validation);
+
+  auto listed = service->list_workloads(10, 0);
+  ASSERT_TRUE(listed.has_value());
+  EXPECT_TRUE(listed->empty());
+}
+
+TEST_F(WorkloadServiceTest, CreateUserImportWorkloadWithAllInvalidRowsStillCreatesWorkload) {
+  const std::string csv = "name,email\n,not-an-email\n";
+  auto result = service->create_user_import_workload(csv);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_EQ(result->total_rows, 1u);
+  EXPECT_EQ(result->valid_rows, 0u);
+  EXPECT_EQ(result->invalid_rows, 1u);
+  EXPECT_EQ(result->workload.total_items(), 0u);
+  EXPECT_EQ(result->workload.status(), domain::WorkloadStatus::Succeeded);
+}
+
+TEST_F(WorkloadServiceTest, ListItemsReturnsBoundedPageAndTotal) {
+  const std::string csv =
+      "name,email\n"
+      "Alice,alice@example.com\n"
+      "Bob,bob@example.com\n"
+      "Carol,carol@example.com\n";
+  auto created = service->create_user_import_workload(csv);
+  ASSERT_TRUE(created.has_value()) << created.error().message();
+  const std::string workload_id = created->workload.id().value();
+
+  auto page1 = service->list_items(workload_id, 2, 0);
+  ASSERT_TRUE(page1.has_value()) << page1.error().message();
+  EXPECT_EQ(page1->total, 3u);
+  EXPECT_EQ(page1->jobs.size(), 2u);
+
+  auto page2 = service->list_items(workload_id, 2, 2);
+  ASSERT_TRUE(page2.has_value());
+  EXPECT_EQ(page2->total, 3u);
+  EXPECT_EQ(page2->jobs.size(), 1u);
+}
+
+TEST_F(WorkloadServiceTest, ListItemsReturnsNotFoundForUnknownWorkload) {
+  auto result = service->list_items(infra::WorkloadId::generate().value(), 10, 0);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::NotFound);
 }
 
 }  // namespace

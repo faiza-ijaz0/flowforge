@@ -20,6 +20,15 @@ namespace flowforge::handlers {
 /// "no arbitrary code execution" constraint, which this respects by only
 /// ever touching its own payload string, with no external I/O.
 ///
+/// The actual validation/normalization rules live in
+/// `domain::validate_and_normalize_user_record()` (Phase 3B), shared with
+/// `services::WorkloadService`'s CSV user-import path
+/// (`services::parse_user_import_csv`) so a CSV row that the import
+/// preview reports as "valid" is guaranteed to be accepted by this
+/// handler at execution time too -- see docs/architecture/user-import.md.
+/// This class only owns JSON payload extraction and the
+/// execution-specific concerns (cancellation, output shape).
+///
 /// Hand-rolled, minimal JSON field extraction (not nlohmann::json): the
 /// engine has zero JSON library dependency by design (see
 /// docs/architecture/overview.md, "Dependency direction") -- the same

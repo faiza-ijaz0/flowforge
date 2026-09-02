@@ -58,13 +58,19 @@ WorkloadStatus derive_workload_status(std::size_t total_items, std::size_t compl
 WorkloadItemOutcome classify_job_status_for_workload(JobStatus status) noexcept {
   switch (status) {
     case JobStatus::Succeeded:
-      return WorkloadItemOutcome::Completed;
+      return WorkloadItemOutcome::Succeeded;
     case JobStatus::Cancelled:
     case JobStatus::DeadLetter:
       return WorkloadItemOutcome::Failed;
-    default:
-      return WorkloadItemOutcome::Active;
+    case JobStatus::Running:
+      return WorkloadItemOutcome::Running;
+    case JobStatus::Pending:
+    case JobStatus::Queued:
+    case JobStatus::Retrying:
+    case JobStatus::Failed:
+      return WorkloadItemOutcome::Queued;
   }
+  return WorkloadItemOutcome::Queued;
 }
 
 Workload Workload::restore(infra::WorkloadId id, std::string type, std::size_t total_items,

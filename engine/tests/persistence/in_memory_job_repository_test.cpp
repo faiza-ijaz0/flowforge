@@ -143,11 +143,27 @@ TEST(InMemoryJobRepositoryTest, ListByWorkloadIdReturnsOnlyMatchingJobs) {
   ASSERT_TRUE(repo.insert(without_workload).has_value());
   ASSERT_TRUE(repo.insert(in_workload_2).has_value());
 
-  auto found = repo.list_by_workload_id(workload_id, 10);
+  auto found = repo.list_by_workload_id(workload_id, 10, 0);
   ASSERT_TRUE(found.has_value());
   ASSERT_EQ(found->size(), 2u);
   EXPECT_EQ((*found)[0].id(), in_workload_1.id());
   EXPECT_EQ((*found)[1].id(), in_workload_2.id());
+}
+
+TEST(InMemoryJobRepositoryTest, ListByWorkloadIdRespectsOffset) {
+  InMemoryJobRepository repo;
+  const auto workload_id = infra::WorkloadId::generate();
+  domain::Job first(infra::JobId::generate(), "default", "{}", domain::RetryPolicy{},
+                    std::chrono::system_clock::now(), 0, "user.process", workload_id);
+  domain::Job second(infra::JobId::generate(), "default", "{}", domain::RetryPolicy{},
+                     std::chrono::system_clock::now(), 0, "user.process", workload_id);
+  ASSERT_TRUE(repo.insert(first).has_value());
+  ASSERT_TRUE(repo.insert(second).has_value());
+
+  auto page = repo.list_by_workload_id(workload_id, 10, 1);
+  ASSERT_TRUE(page.has_value());
+  ASSERT_EQ(page->size(), 1u);
+  EXPECT_EQ((*page)[0].id(), second.id());
 }
 
 TEST(InMemoryJobRepositoryTest, ListByWorkloadIdReturnsEmptyWhenNoJobsMatch) {
@@ -155,7 +171,7 @@ TEST(InMemoryJobRepositoryTest, ListByWorkloadIdReturnsEmptyWhenNoJobsMatch) {
   domain::Job job = make_job();
   ASSERT_TRUE(repo.insert(job).has_value());
 
-  auto found = repo.list_by_workload_id(infra::WorkloadId::generate(), 10);
+  auto found = repo.list_by_workload_id(infra::WorkloadId::generate(), 10, 0);
   ASSERT_TRUE(found.has_value());
   EXPECT_TRUE(found->empty());
 }

@@ -15,6 +15,7 @@
 #include "flowforge/persistence/workload_repository.hpp"
 #include "flowforge/result.hpp"
 #include "flowforge/services/job_service.hpp"
+#include "flowforge/services/user_import_parser.hpp"
 
 namespace flowforge::services {
 
@@ -56,6 +57,35 @@ struct WorkloadItemDispatchOutcome {
 struct CreateWorkloadResult {
   domain::Workload workload;
   std::vector<WorkloadItemDispatchOutcome> items;
+};
+
+/// Result of a CSV user-import (Phase 3B -- see
+/// docs/architecture/user-import.md). Wraps a regular
+/// `CreateWorkloadResult` (one item per *valid* CSV row) with the CSV
+/// parse's own summary, so a caller can tell "how many rows were even
+/// attempted" from "how many became jobs" -- see
+/// docs/architecture/user-import.md, "Bulk submission semantics": the
+/// response must distinguish total rows / valid rows / invalid rows /
+/// submitted jobs, never silently pretend every uploaded row became a
+/// job.
+struct UserImportResult {
+  domain::Workload workload;
+  std::vector<WorkloadItemDispatchOutcome> items;
+  std::size_t total_rows = 0;
+  std::size_t valid_rows = 0;
+  std::size_t invalid_rows = 0;
+  std::vector<RejectedImportRow> rejected_rows;
+  bool rejected_rows_truncated = false;
+};
+
+/// One bounded page of a workload's child jobs, for the per-item detail
+/// view (`GET /api/v1/workloads/{id}/items`) -- see
+/// docs/architecture/user-import.md, "Bounded item retrieval". `total` is
+/// the workload's `total_items()`, not `jobs.size()` -- the caller needs
+/// both to render "showing 1-50 of 137".
+struct WorkloadItemsPage {
+  std::vector<domain::Job> jobs;
+  std::size_t total = 0;
 };
 
 /// Application-level orchestration for workloads -- the aggregate that
@@ -102,6 +132,24 @@ class WorkloadService {
 
   [[nodiscard]] Result<std::vector<domain::Workload>> list_workloads(std::size_t limit,
                                                                      std::size_t offset) const;
+
+  /// Parses `csv_content` (see `parse_user_import_csv` for the full CSV
+  /// contract), then creates a workload exactly the way `create_workload`
+  /// does -- one Job per *valid* row -- by delegating to it, so this
+  /// never duplicates the create-then-schedule/partial-failure/progress
+  /// logic above. A structurally-invalid CSV (bad header, malformed,
+  /// oversized, not UTF-8, too many rows) is rejected wholesale: no
+  /// workload is created at all. A CSV with some invalid *rows* still
+  /// creates a workload for the valid ones -- see
+  /// docs/architecture/user-import.md, "Bulk submission semantics".
+  [[nodiscard]] Result<UserImportResult> create_user_import_workload(const std::string& csv_content);
+
+  /// One bounded, offset-paginated page of `workload_id`'s child jobs (see
+  /// `WorkloadItemsPage`). Returns `ErrorCode::NotFound` if the workload
+  /// itself does not exist. `limit` is clamped the same way
+  /// `list_workloads` clamps its own limit.
+  [[nodiscard]] Result<WorkloadItemsPage> list_items(const std::string& workload_id, std::size_t limit,
+                                                     std::size_t offset) const;
 
  private:
   [[nodiscard]] Result<domain::Workload> with_progress(domain::Workload workload) const;

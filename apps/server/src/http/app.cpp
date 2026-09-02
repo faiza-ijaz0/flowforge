@@ -130,6 +130,16 @@ App::App(infra::AppConfig config, std::shared_ptr<infra::Logger> logger,
 void App::register_routes() {
   register_cors(http_, config_.cors_allowed_origin);
 
+  // Phase 3B: a coarse, server-wide safety net bounding how much of any
+  // single request body httplib will buffer into memory before a route
+  // handler even runs -- defense in depth alongside
+  // `services::WorkloadService`'s own, tighter, CSV-specific size check
+  // (see docs/architecture/user-import.md, "Security"). 8 MiB comfortably
+  // covers the CSV import's 2 MiB file-content bound plus multipart
+  // framing/header overhead, while still bounding worst-case memory for
+  // every other endpoint on this server.
+  http_.set_payload_max_length(std::size_t{8} * 1024 * 1024);
+
   // Phase 2B-5: GET /ready reflects the actual state of every component
   // required to accept and process work, not just process liveness -- see
   // health_routes.hpp's class comment and docs/architecture/

@@ -291,10 +291,34 @@ TEST_F(PostgresJobRepositoryTest, ListByWorkloadIdReturnsOnlyMatchingJobs) {
   ASSERT_TRUE(repo.insert(in_workload).has_value());
   ASSERT_TRUE(repo.insert(without_workload).has_value());
 
-  auto found = repo.list_by_workload_id(workload.id(), 10);
+  auto found = repo.list_by_workload_id(workload.id(), 10, 0);
   ASSERT_TRUE(found.has_value()) << found.error().message();
   ASSERT_EQ(found->size(), 1u);
   EXPECT_EQ((*found)[0].id(), in_workload.id());
+}
+
+// Phase 3B: pagination backs WorkloadService::list_items -- see
+// docs/architecture/user-import.md, "Bounded item retrieval".
+TEST_F(PostgresJobRepositoryTest, ListByWorkloadIdRespectsOffset) {
+  PostgresWorkloadRepository workload_repo(pool_, logger_);
+  domain::Workload workload(infra::WorkloadId::generate(), "user.process", 2,
+                            std::chrono::system_clock::now());
+  ASSERT_TRUE(workload_repo.insert(workload).has_value());
+
+  PostgresJobRepository repo(pool_, logger_);
+  domain::Job first(infra::JobId::generate(), "integration-tests", "{}", domain::RetryPolicy{},
+                    std::chrono::system_clock::now(), /*priority=*/0, /*job_type=*/"user.process",
+                    workload.id());
+  domain::Job second(infra::JobId::generate(), "integration-tests", "{}", domain::RetryPolicy{},
+                     std::chrono::system_clock::now(), /*priority=*/0, /*job_type=*/"user.process",
+                     workload.id());
+  ASSERT_TRUE(repo.insert(first).has_value());
+  ASSERT_TRUE(repo.insert(second).has_value());
+
+  auto page = repo.list_by_workload_id(workload.id(), 10, 1);
+  ASSERT_TRUE(page.has_value()) << page.error().message();
+  ASSERT_EQ(page->size(), 1u);
+  EXPECT_EQ((*page)[0].id(), second.id());
 }
 
 }  // namespace

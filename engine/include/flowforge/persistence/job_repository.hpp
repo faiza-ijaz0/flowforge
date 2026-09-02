@@ -41,16 +41,20 @@ class IJobRepository {
   [[nodiscard]] virtual Result<std::vector<domain::Job>> list_by_status(domain::JobStatus status,
                                                                         std::size_t limit) const = 0;
 
-  /// Returns up to `limit` jobs whose `workload_id()` equals `workload_id`,
-  /// in an unspecified but stable order (creation order in both
-  /// implementations). Added for Phase 3A's `services::WorkloadService`,
-  /// which uses this to compute a workload's live progress from its child
-  /// jobs' current statuses (see docs/architecture/workload-model.md,
-  /// "Status derivation") rather than maintaining separately-updated
-  /// counters. `jobs.workload_id` has an index (`idx_jobs_workload_id`,
-  /// migration 0013), so this is not a full-table scan.
+  /// Returns up to `limit` jobs (skipping the first `offset`) whose
+  /// `workload_id()` equals `workload_id`, in an unspecified but stable
+  /// order (creation order in both implementations). Added for Phase 3A's
+  /// `services::WorkloadService`, which uses this (offset always 0, limit
+  /// = the workload's total_items) to compute a workload's live progress
+  /// from its child jobs' current statuses (see docs/architecture/
+  /// workload-model.md, "Status derivation") rather than maintaining
+  /// separately-updated counters. `offset` was added in Phase 3B for
+  /// `WorkloadService::list_items`'s paginated per-item view (see
+  /// docs/architecture/user-import.md, "Bounded item retrieval").
+  /// `jobs.workload_id` has an index (`idx_jobs_workload_id`, migration
+  /// 0013), so this is not a full-table scan.
   [[nodiscard]] virtual Result<std::vector<domain::Job>> list_by_workload_id(
-      const infra::WorkloadId& workload_id, std::size_t limit) const = 0;
+      const infra::WorkloadId& workload_id, std::size_t limit, std::size_t offset) const = 0;
 };
 
 }  // namespace flowforge::persistence

@@ -12,6 +12,7 @@ add_library(flowforge_engine STATIC
   src/domain/worker.cpp
   src/domain/execution.cpp
   src/domain/execution_result.cpp
+  src/domain/workload.cpp
   src/engine/handler_registry.cpp
   src/engine/priority_scheduler.cpp
   src/engine/job_executor.cpp
@@ -20,10 +21,12 @@ add_library(flowforge_engine STATIC
   src/handlers/echo_handler.cpp
   src/handlers/delay_handler.cpp
   src/handlers/transform_handler.cpp
+  src/handlers/user_process_handler.cpp
   src/handlers/builtin_handlers.cpp
   src/persistence/in_memory_repositories.cpp
   src/persistence/repository_factory.cpp
   src/services/job_service.cpp
+  src/services/workload_service.cpp
 )
 
 add_library(flowforge::engine ALIAS flowforge_engine)
@@ -55,6 +58,7 @@ if(FLOWFORGE_WITH_POSTGRES)
     src/persistence/postgres/postgres_workflow_repository.cpp
     src/persistence/postgres/postgres_worker_repository.cpp
     src/persistence/postgres/postgres_execution_repository.cpp
+    src/persistence/postgres/postgres_workload_repository.cpp
   )
   target_link_libraries(flowforge_engine PRIVATE pqxx)
   # PUBLIC: repository_factory.hpp's #ifdef FLOWFORGE_WITH_POSTGRES branch

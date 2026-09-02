@@ -8,6 +8,7 @@
 #include "flowforge/persistence/job_repository.hpp"
 #include "flowforge/persistence/worker_repository.hpp"
 #include "flowforge/persistence/workflow_repository.hpp"
+#include "flowforge/persistence/workload_repository.hpp"
 
 namespace flowforge::persistence {
 
@@ -26,10 +27,25 @@ class InMemoryJobRepository final : public IJobRepository {
   Result<void> update(const domain::Job& job) override;
   [[nodiscard]] Result<std::vector<domain::Job>> list_by_status(domain::JobStatus status,
                                                                 std::size_t limit) const override;
+  [[nodiscard]] Result<std::vector<domain::Job>> list_by_workload_id(const infra::WorkloadId& workload_id,
+                                                                     std::size_t limit) const override;
 
  private:
   mutable std::mutex mutex_;
   std::map<std::string, domain::Job> jobs_by_id_;
+  std::vector<std::string> insertion_order_;
+};
+
+class InMemoryWorkloadRepository final : public IWorkloadRepository {
+ public:
+  Result<void> insert(const domain::Workload& workload) override;
+  [[nodiscard]] Result<domain::Workload> find_by_id(const infra::WorkloadId& id) const override;
+  [[nodiscard]] Result<std::vector<domain::Workload>> list(std::size_t limit,
+                                                           std::size_t offset) const override;
+
+ private:
+  mutable std::mutex mutex_;
+  std::map<std::string, domain::Workload> workloads_by_id_;
   std::vector<std::string> insertion_order_;
 };
 

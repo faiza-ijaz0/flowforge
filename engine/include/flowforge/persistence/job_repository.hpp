@@ -40,6 +40,17 @@ class IJobRepository {
   /// migration is needed for this query to be efficient.
   [[nodiscard]] virtual Result<std::vector<domain::Job>> list_by_status(domain::JobStatus status,
                                                                         std::size_t limit) const = 0;
+
+  /// Returns up to `limit` jobs whose `workload_id()` equals `workload_id`,
+  /// in an unspecified but stable order (creation order in both
+  /// implementations). Added for Phase 3A's `services::WorkloadService`,
+  /// which uses this to compute a workload's live progress from its child
+  /// jobs' current statuses (see docs/architecture/workload-model.md,
+  /// "Status derivation") rather than maintaining separately-updated
+  /// counters. `jobs.workload_id` has an index (`idx_jobs_workload_id`,
+  /// migration 0013), so this is not a full-table scan.
+  [[nodiscard]] virtual Result<std::vector<domain::Job>> list_by_workload_id(
+      const infra::WorkloadId& workload_id, std::size_t limit) const = 0;
 };
 
 }  // namespace flowforge::persistence

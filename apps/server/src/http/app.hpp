@@ -18,6 +18,7 @@
 #include "flowforge/persistence/repository_factory.hpp"
 #include "flowforge/result.hpp"
 #include "flowforge/services/job_service.hpp"
+#include "flowforge/services/workload_service.hpp"
 
 namespace flowforge::server {
 
@@ -63,7 +64,9 @@ class App {
   std::shared_ptr<persistence::IWorkflowRepository> workflow_repository_;
   std::shared_ptr<persistence::IWorkerRepository> worker_repository_;
   std::shared_ptr<engine::IExecutionManager> execution_manager_;
+  std::shared_ptr<persistence::IWorkloadRepository> workload_repository_;
   std::shared_ptr<services::JobService> job_service_;
+  std::shared_ptr<services::WorkloadService> workload_service_;
   std::shared_ptr<engine::HandlerRegistry> handler_registry_;
   std::shared_ptr<engine::LocalWorkerPool> worker_pool_;
   std::shared_ptr<engine::PriorityScheduler> scheduler_;

@@ -93,9 +93,9 @@ Result<domain::RetryPolicy> retry_policy_from_json(std::string_view json) {
 // literals convert to zview implicitly (and safely) instead.
 constexpr pqxx::zview kInsertJob =
     "INSERT INTO jobs (id, queue_name, payload, priority, status, attempt_count, retry_policy, last_error, "
-    "created_at, updated_at, job_type) "
+    "created_at, updated_at, job_type, workload_id) "
     "VALUES ($1, $2, to_jsonb($3::text), $4, $5, $6, $7::jsonb, $8, to_timestamp($9), to_timestamp($10), "
-    "$11)";
+    "$11, $12)";
 
 constexpr pqxx::zview kUpsertQueue = "INSERT INTO queues (name) VALUES ($1) ON CONFLICT (name) DO NOTHING";
 
@@ -103,18 +103,24 @@ constexpr std::string_view kSelectJobColumns =
     "id, queue_name, payload #>> '{}' AS payload, priority, status, attempt_count, retry_policy::text AS "
     "retry_policy, last_error, extract(epoch from created_at) AS created_at_epoch, extract(epoch from "
     "updated_at) "
-    "AS updated_at_epoch, job_type";
+    "AS updated_at_epoch, job_type, workload_id";
 
 constexpr pqxx::zview kSelectJobsByStatus =
     "SELECT id, queue_name, payload #>> '{}' AS payload, priority, status, attempt_count, "
     "retry_policy::text AS retry_policy, last_error, extract(epoch from created_at) AS created_at_epoch, "
-    "extract(epoch from updated_at) AS updated_at_epoch, job_type FROM jobs WHERE status = $1 "
+    "extract(epoch from updated_at) AS updated_at_epoch, job_type, workload_id FROM jobs WHERE status = $1 "
     "ORDER BY updated_at ASC LIMIT $2";
+
+constexpr pqxx::zview kSelectJobsByWorkloadId =
+    "SELECT id, queue_name, payload #>> '{}' AS payload, priority, status, attempt_count, "
+    "retry_policy::text AS retry_policy, last_error, extract(epoch from created_at) AS created_at_epoch, "
+    "extract(epoch from updated_at) AS updated_at_epoch, job_type, workload_id FROM jobs "
+    "WHERE workload_id = $1 ORDER BY created_at ASC LIMIT $2";
 
 constexpr pqxx::zview kUpdateJob =
     "UPDATE jobs SET queue_name = $2, payload = to_jsonb($3::text), priority = $4, status = $5, "
     "attempt_count = $6, retry_policy = $7::jsonb, last_error = $8, updated_at = to_timestamp($9), "
-    "job_type = $10 WHERE id = $1";
+    "job_type = $10, workload_id = $11 WHERE id = $1";
 
 Result<domain::Job> row_to_job(const pqxx::row& row) {
   auto status = domain::job_status_from_string(row["status"].as<std::string>());
@@ -125,12 +131,26 @@ Result<domain::Job> row_to_job(const pqxx::row& row) {
   if (!retry_policy) {
     return std::unexpected(retry_policy.error());
   }
-  return domain::Job::restore(
-      infra::JobId{row["id"].as<std::string>()}, row["queue_name"].as<std::string>(),
-      row["payload"].as<std::string>(), *retry_policy, row["priority"].as<int>(), *status,
-      row["attempt_count"].as<std::uint32_t>(), row["last_error"].as<std::optional<std::string>>(),
-      from_epoch_seconds(row["created_at_epoch"].as<double>()),
-      from_epoch_seconds(row["updated_at_epoch"].as<double>()), row["job_type"].as<std::string>());
+  std::optional<infra::WorkloadId> workload_id;
+  if (auto raw = row["workload_id"].as<std::optional<std::string>>()) {
+    workload_id = infra::WorkloadId{*raw};
+  }
+  return domain::Job::restore(infra::JobId{row["id"].as<std::string>()}, row["queue_name"].as<std::string>(),
+                              row["payload"].as<std::string>(), *retry_policy, row["priority"].as<int>(),
+                              *status, row["attempt_count"].as<std::uint32_t>(),
+                              row["last_error"].as<std::optional<std::string>>(),
+                              from_epoch_seconds(row["created_at_epoch"].as<double>()),
+                              from_epoch_seconds(row["updated_at_epoch"].as<double>()),
+                              row["job_type"].as<std::string>(), std::move(workload_id));
+}
+
+/// pqxx binds `std::optional<std::string>` as NULL when empty -- used for
+/// `jobs.workload_id`, which is nullable (see migration 0013).
+std::optional<std::string> workload_id_param(const domain::Job& job) {
+  if (!job.workload_id().has_value()) {
+    return std::nullopt;
+  }
+  return job.workload_id()->value();
 }
 
 }  // namespace
@@ -148,11 +168,12 @@ Result<void> PostgresJobRepository::insert(const domain::Job& job) {
     }
     pqxx::work txn(**conn);
     txn.exec_params(kUpsertQueue, pqxx::params{job.queue_name()});
-    txn.exec_params(kInsertJob, pqxx::params{job.id().value(), job.queue_name(), job.payload(),
-                                             job.priority(), std::string(domain::to_string(job.status())),
-                                             job.attempt_count(), retry_policy_to_json(job.retry_policy()),
-                                             job.last_error(), to_epoch_seconds(job.created_at()),
-                                             to_epoch_seconds(job.updated_at()), job.job_type()});
+    txn.exec_params(kInsertJob,
+                    pqxx::params{job.id().value(), job.queue_name(), job.payload(), job.priority(),
+                                 std::string(domain::to_string(job.status())), job.attempt_count(),
+                                 retry_policy_to_json(job.retry_policy()), job.last_error(),
+                                 to_epoch_seconds(job.created_at()), to_epoch_seconds(job.updated_at()),
+                                 job.job_type(), workload_id_param(job)});
     txn.commit();
     if (metrics_) {
       metrics_->increment_counter("flowforge_db_job_inserts_total");
@@ -236,7 +257,7 @@ Result<void> PostgresJobRepository::update(const domain::Job& job) {
         kUpdateJob, pqxx::params{job.id().value(), job.queue_name(), job.payload(), job.priority(),
                                  std::string(domain::to_string(job.status())), job.attempt_count(),
                                  retry_policy_to_json(job.retry_policy()), job.last_error(),
-                                 to_epoch_seconds(job.updated_at()), job.job_type()});
+                                 to_epoch_seconds(job.updated_at()), job.job_type(), workload_id_param(job)});
     txn.commit();
     if (result.affected_rows() == 0) {
       return std::unexpected(
@@ -284,6 +305,39 @@ Result<std::vector<domain::Job>> PostgresJobRepository::list_by_status(domain::J
       metrics_->increment_counter("flowforge_db_errors_total");
     }
     return std::unexpected(map_exception(e, "job_repository.list_by_status"));
+  }
+}
+
+Result<std::vector<domain::Job>> PostgresJobRepository::list_by_workload_id(
+    const infra::WorkloadId& workload_id, std::size_t limit) const {
+  try {
+    auto conn = pool_->acquire();
+    if (!conn) {
+      return std::unexpected(conn.error());
+    }
+    pqxx::work txn(**conn);
+    auto result = txn.exec_params(kSelectJobsByWorkloadId,
+                                  pqxx::params{workload_id.value(), static_cast<long long>(limit)});
+    txn.commit();
+
+    std::vector<domain::Job> jobs;
+    jobs.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+      auto job = row_to_job(row);
+      if (!job) {
+        return std::unexpected(job.error());
+      }
+      jobs.push_back(std::move(*job));
+    }
+    return jobs;
+  } catch (const std::exception& e) {
+    logger_->error(
+        kComponent, "list_by_workload_id failed",
+        {{.key = "workload_id", .value = workload_id.value()}, {.key = "error", .value = e.what()}});
+    if (metrics_) {
+      metrics_->increment_counter("flowforge_db_errors_total");
+    }
+    return std::unexpected(map_exception(e, "job_repository.list_by_workload_id"));
   }
 }
 

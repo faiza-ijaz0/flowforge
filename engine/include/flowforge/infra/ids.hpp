@@ -41,12 +41,14 @@ struct WorkflowIdTag {};
 struct WorkflowStepIdTag {};
 struct WorkerIdTag {};
 struct ExecutionIdTag {};
+struct WorkloadIdTag {};
 
 using JobId = Id<JobIdTag>;
 using WorkflowId = Id<WorkflowIdTag>;
 using WorkflowStepId = Id<WorkflowStepIdTag>;
 using WorkerId = Id<WorkerIdTag>;
 using ExecutionId = Id<ExecutionIdTag>;
+using WorkloadId = Id<WorkloadIdTag>;
 
 }  // namespace flowforge::infra
 

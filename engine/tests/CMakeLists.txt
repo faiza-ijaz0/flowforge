@@ -9,6 +9,7 @@ add_executable(flowforge_engine_tests
   domain/job_test.cpp
   domain/execution_result_test.cpp
   domain/execution_test.cpp
+  domain/workload_test.cpp
   engine/blocking_queue_test.cpp
   engine/thread_pool_test.cpp
   engine/handler_registry_test.cpp
@@ -22,9 +23,12 @@ add_executable(flowforge_engine_tests
   handlers/echo_handler_test.cpp
   handlers/transform_handler_test.cpp
   handlers/delay_handler_test.cpp
+  handlers/user_process_handler_test.cpp
   persistence/in_memory_job_repository_test.cpp
   persistence/in_memory_execution_repository_test.cpp
+  persistence/in_memory_workload_repository_test.cpp
   services/job_service_test.cpp
+  services/workload_service_test.cpp
 )
 
 target_link_libraries(flowforge_engine_tests
@@ -48,6 +52,7 @@ if(FLOWFORGE_WITH_POSTGRES)
     persistence/postgres/postgres_worker_repository_test.cpp
     persistence/postgres/postgres_execution_repository_test.cpp
     persistence/postgres/postgres_retry_engine_acceptance_test.cpp
+    persistence/postgres/postgres_workload_repository_test.cpp
   )
   target_include_directories(flowforge_engine_tests PRIVATE persistence/postgres)
   target_link_libraries(flowforge_engine_tests PRIVATE pqxx)

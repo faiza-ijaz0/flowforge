@@ -2,6 +2,7 @@ add_executable(flowforge_server_tests
   http_server_test.cpp
   health_routes_test.cpp
   error_response_test.cpp
+  workload_routes_test.cpp
 )
 
 target_link_libraries(flowforge_server_tests

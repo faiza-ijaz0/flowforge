@@ -58,9 +58,10 @@ std::optional<JobStatus> job_status_from_string(std::string_view value) noexcept
 Job Job::restore(infra::JobId id, std::string queue_name, std::string payload, RetryPolicy retry_policy,
                  int priority, JobStatus status, std::uint32_t attempt_count,
                  std::optional<std::string> last_error, infra::TimePoint created_at,
-                 infra::TimePoint updated_at, std::string job_type) {
+                 infra::TimePoint updated_at, std::string job_type,
+                 std::optional<infra::WorkloadId> workload_id) {
   Job job(std::move(id), std::move(queue_name), std::move(payload), retry_policy, created_at, priority,
-          std::move(job_type));
+          std::move(job_type), std::move(workload_id));
   job.status_ = status;
   job.attempt_count_ = attempt_count;
   job.last_error_ = std::move(last_error);

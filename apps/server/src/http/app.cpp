@@ -10,6 +10,7 @@
 #include "http/routes/job_routes.hpp"
 #include "http/routes/worker_routes.hpp"
 #include "http/routes/workflow_routes.hpp"
+#include "http/routes/workload_routes.hpp"
 
 namespace flowforge::server {
 
@@ -107,7 +108,16 @@ App::App(infra::AppConfig config, std::shared_ptr<infra::Logger> logger,
       workflow_repository_(std::move(repositories.workflows)),
       worker_repository_(std::move(repositories.workers)),
       execution_manager_(std::move(repositories.executions)),
+      workload_repository_(std::move(repositories.workloads)),
       job_service_(std::make_shared<services::JobService>(job_repository_, clock_, logger_, metrics_)),
+      // Phase 3A: WorkloadService reuses JobService/scheduler exactly like
+      // POST /api/v1/jobs does for a single job -- it is constructed here,
+      // after job_service_, using the `scheduler` constructor parameter
+      // directly (the scheduler_ *member* below is declared later, but the
+      // parameter is available immediately regardless of member
+      // declaration order).
+      workload_service_(std::make_shared<services::WorkloadService>(
+          workload_repository_, job_repository_, job_service_, scheduler, clock_, logger_, metrics_)),
       handler_registry_(std::move(handler_registry)),
       worker_pool_(std::move(worker_pool)),
       scheduler_(std::move(scheduler)),
@@ -139,6 +149,7 @@ void App::register_routes() {
   register_job_routes(http_, job_service_, scheduler_, worker_pool_, execution_manager_, metrics_);
   register_workflow_routes(http_, workflow_repository_);
   register_worker_routes(http_, worker_repository_);
+  register_workload_routes(http_, workload_service_, metrics_);
 
   http_.set_logger(
       [logger = logger_, metrics = metrics_](const httplib::Request& req, const httplib::Response& res) {

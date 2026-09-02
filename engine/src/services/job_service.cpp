@@ -68,7 +68,7 @@ Result<domain::Job> JobService::create_job(const CreateJobRequest& request) {
   }
 
   domain::Job job(infra::JobId::generate(), request.queue_name, request.payload, retry_policy, clock_->now(),
-                  request.priority, request.job_type);
+                  request.priority, request.job_type, request.workload_id);
 
   auto inserted = repository_->insert(job);
   if (!inserted) {

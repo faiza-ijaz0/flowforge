@@ -1,5 +1,6 @@
 #include "flowforge/persistence/postgres/postgres_job_repository.hpp"
 
+#include "flowforge/persistence/postgres/postgres_workload_repository.hpp"
 #include "postgres_test_support.hpp"
 
 namespace flowforge::persistence::postgres {
@@ -235,6 +236,65 @@ TEST_F(PostgresJobRepositoryTest, DataSurvivesAcrossRepositoryInstances) {
   ASSERT_TRUE(found.has_value()) << found.error().message();
   EXPECT_EQ(found->id(), job.id());
   EXPECT_EQ(found->payload(), job.payload());
+}
+
+// Phase 3A: jobs.workload_id (migration 0013) is nullable and defaults to
+// unset -- see docs/architecture/workload-model.md, "Job <-> Workload
+// relationship".
+TEST_F(PostgresJobRepositoryTest, DefaultWorkloadIdIsUnset) {
+  PostgresJobRepository repo(pool_, logger_);
+  domain::Job job = make_job();
+  ASSERT_TRUE(repo.insert(job).has_value());
+
+  auto found = repo.find_by_id(job.id());
+  ASSERT_TRUE(found.has_value()) << found.error().message();
+  EXPECT_FALSE(found->workload_id().has_value());
+}
+
+TEST_F(PostgresJobRepositoryTest, WorkloadIdRoundTripsThroughInsertAndUpdate) {
+  PostgresWorkloadRepository workload_repo(pool_, logger_);
+  domain::Workload workload(infra::WorkloadId::generate(), "user.process", 1,
+                            std::chrono::system_clock::now());
+  ASSERT_TRUE(workload_repo.insert(workload).has_value());
+
+  PostgresJobRepository repo(pool_, logger_);
+  domain::Job job(infra::JobId::generate(), "integration-tests", "{}", domain::RetryPolicy{},
+                  std::chrono::system_clock::now(), /*priority=*/0, /*job_type=*/"user.process",
+                  workload.id());
+  ASSERT_TRUE(repo.insert(job).has_value());
+
+  auto found = repo.find_by_id(job.id());
+  ASSERT_TRUE(found.has_value()) << found.error().message();
+  ASSERT_TRUE(found->workload_id().has_value());
+  EXPECT_EQ(*found->workload_id(), workload.id());
+
+  job.transition_to(domain::JobStatus::Queued, std::chrono::system_clock::now());
+  ASSERT_TRUE(repo.update(job).has_value());
+
+  auto refetched = repo.find_by_id(job.id());
+  ASSERT_TRUE(refetched.has_value());
+  ASSERT_TRUE(refetched->workload_id().has_value());
+  EXPECT_EQ(*refetched->workload_id(), workload.id());
+}
+
+TEST_F(PostgresJobRepositoryTest, ListByWorkloadIdReturnsOnlyMatchingJobs) {
+  PostgresWorkloadRepository workload_repo(pool_, logger_);
+  domain::Workload workload(infra::WorkloadId::generate(), "user.process", 2,
+                            std::chrono::system_clock::now());
+  ASSERT_TRUE(workload_repo.insert(workload).has_value());
+
+  PostgresJobRepository repo(pool_, logger_);
+  domain::Job in_workload(infra::JobId::generate(), "integration-tests", "{}", domain::RetryPolicy{},
+                          std::chrono::system_clock::now(), /*priority=*/0, /*job_type=*/"user.process",
+                          workload.id());
+  domain::Job without_workload = make_job();
+  ASSERT_TRUE(repo.insert(in_workload).has_value());
+  ASSERT_TRUE(repo.insert(without_workload).has_value());
+
+  auto found = repo.list_by_workload_id(workload.id(), 10);
+  ASSERT_TRUE(found.has_value()) << found.error().message();
+  ASSERT_EQ(found->size(), 1u);
+  EXPECT_EQ((*found)[0].id(), in_workload.id());
 }
 
 }  // namespace

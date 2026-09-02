@@ -67,6 +67,60 @@ Result<std::vector<domain::Job>> InMemoryJobRepository::list_by_status(domain::J
   return result;
 }
 
+Result<std::vector<domain::Job>> InMemoryJobRepository::list_by_workload_id(
+    const infra::WorkloadId& workload_id, std::size_t limit) const {
+  std::lock_guard lock(mutex_);
+  std::vector<domain::Job> result;
+  for (const auto& id : insertion_order_) {
+    if (result.size() >= limit) {
+      break;
+    }
+    const domain::Job& job = jobs_by_id_.at(id);
+    if (job.workload_id().has_value() && *job.workload_id() == workload_id) {
+      result.push_back(job);
+    }
+  }
+  return result;
+}
+
+// --- InMemoryWorkloadRepository -------------------------------------------
+
+Result<void> InMemoryWorkloadRepository::insert(const domain::Workload& workload) {
+  std::lock_guard lock(mutex_);
+  const std::string& id = workload.id().value();
+  if (workloads_by_id_.contains(id)) {
+    return std::unexpected(make_error(ErrorCode::Conflict, "workload with id '" + id + "' already exists"));
+  }
+  workloads_by_id_.emplace(id, workload);
+  insertion_order_.push_back(id);
+  return {};
+}
+
+Result<domain::Workload> InMemoryWorkloadRepository::find_by_id(const infra::WorkloadId& id) const {
+  std::lock_guard lock(mutex_);
+  auto it = workloads_by_id_.find(id.value());
+  if (it == workloads_by_id_.end()) {
+    return std::unexpected(
+        make_error(ErrorCode::NotFound, "workload with id '" + id.value() + "' was not found"));
+  }
+  return it->second;
+}
+
+Result<std::vector<domain::Workload>> InMemoryWorkloadRepository::list(std::size_t limit,
+                                                                       std::size_t offset) const {
+  std::lock_guard lock(mutex_);
+  std::vector<domain::Workload> result;
+  if (offset >= insertion_order_.size()) {
+    return result;
+  }
+  const std::size_t end = std::min(insertion_order_.size(), offset + limit);
+  result.reserve(end - offset);
+  for (std::size_t i = offset; i < end; ++i) {
+    result.push_back(workloads_by_id_.at(insertion_order_[i]));
+  }
+  return result;
+}
+
 // --- InMemoryWorkflowRepository ------------------------------------------
 
 Result<void> InMemoryWorkflowRepository::insert(const domain::Workflow& workflow) {

@@ -52,13 +52,15 @@ enum class JobStatus : std::uint8_t {
 class Job {
  public:
   Job(infra::JobId id, std::string queue_name, std::string payload, RetryPolicy retry_policy,
-      infra::TimePoint created_at, int priority = 0, std::string job_type = "")
+      infra::TimePoint created_at, int priority = 0, std::string job_type = "",
+      std::optional<infra::WorkloadId> workload_id = std::nullopt)
       : id_(std::move(id)),
         queue_name_(std::move(queue_name)),
         payload_(std::move(payload)),
         retry_policy_(retry_policy),
         priority_(priority),
         job_type_(std::move(job_type)),
+        workload_id_(std::move(workload_id)),
         created_at_(created_at),
         updated_at_(created_at) {}
 
@@ -71,6 +73,13 @@ class Job {
   [[nodiscard]] JobStatus status() const noexcept { return status_; }
   [[nodiscard]] std::uint32_t attempt_count() const noexcept { return attempt_count_; }
   [[nodiscard]] const std::optional<std::string>& last_error() const noexcept { return last_error_; }
+  /// Optional (default nullopt): the workload this job was created on
+  /// behalf of, if any (see docs/architecture/workload-model.md, "Job <->
+  /// Workload relationship"). A job created directly via `POST
+  /// /api/v1/jobs` (not through `services::WorkloadService`) always has
+  /// this unset and continues to work exactly as it did before this field
+  /// existed.
+  [[nodiscard]] const std::optional<infra::WorkloadId>& workload_id() const noexcept { return workload_id_; }
   [[nodiscard]] infra::TimePoint created_at() const noexcept { return created_at_; }
   [[nodiscard]] infra::TimePoint updated_at() const noexcept { return updated_at_; }
 
@@ -119,7 +128,8 @@ class Job {
                                    RetryPolicy retry_policy, int priority, JobStatus status,
                                    std::uint32_t attempt_count, std::optional<std::string> last_error,
                                    infra::TimePoint created_at, infra::TimePoint updated_at,
-                                   std::string job_type = "");
+                                   std::string job_type = "",
+                                   std::optional<infra::WorkloadId> workload_id = std::nullopt);
 
  private:
   infra::JobId id_;
@@ -128,6 +138,7 @@ class Job {
   RetryPolicy retry_policy_;
   int priority_;
   std::string job_type_;
+  std::optional<infra::WorkloadId> workload_id_;
   JobStatus status_ = JobStatus::Pending;
   std::uint32_t attempt_count_ = 0;
   std::optional<std::string> last_error_;

@@ -2,11 +2,15 @@ import type {
   ApiErrorBody,
   CreateJobInput,
   CreateJobResponse,
+  CreateWorkloadInput,
+  CreateWorkloadResponse,
   Job,
   ListAttemptsResponse,
   ListJobsResponse,
   ListWorkersResponse,
   ListWorkflowsResponse,
+  ListWorkloadsResponse,
+  Workload,
 } from "@flowforge/shared";
 
 import { apiBaseUrl } from "./config";
@@ -73,4 +77,13 @@ export const apiClient = {
 
   listWorkflows: () => request<ListWorkflowsResponse>("/api/v1/workflows"),
   listWorkers: () => request<ListWorkersResponse>("/api/v1/workers"),
+
+  // Phase 3A: the workload platform foundation (see
+  // docs/architecture/workload-model.md). No /users page consumes these
+  // yet -- see that doc, "Deferred to Phase 3B".
+  createWorkload: (input: CreateWorkloadInput) =>
+    request<CreateWorkloadResponse>("/api/v1/workloads", { method: "POST", body: JSON.stringify(input) }),
+  getWorkload: (id: string) => request<Workload>(`/api/v1/workloads/${encodeURIComponent(id)}`),
+  listWorkloads: (limit = 50, offset = 0) =>
+    request<ListWorkloadsResponse>(`/api/v1/workloads?limit=${limit}&offset=${offset}`),
 };

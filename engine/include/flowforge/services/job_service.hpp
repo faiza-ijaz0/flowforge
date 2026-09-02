@@ -8,6 +8,7 @@
 #include "flowforge/domain/job.hpp"
 #include "flowforge/domain/retry_policy.hpp"
 #include "flowforge/infra/clock.hpp"
+#include "flowforge/infra/ids.hpp"
 #include "flowforge/infra/logger.hpp"
 #include "flowforge/infra/metrics.hpp"
 #include "flowforge/persistence/job_repository.hpp"
@@ -26,6 +27,13 @@ struct CreateJobRequest {
   /// couple JobService to engine::HandlerRegistry, which is Scheduler's
   /// concern; see docs/architecture/execution-model.md).
   std::string job_type = "";
+  /// Optional (default nullopt). Set only by `services::WorkloadService`
+  /// when creating a job on behalf of a workload item -- the public `POST
+  /// /api/v1/jobs` request body never populates this (see
+  /// `apps/server/src/json/job_json.cpp::parse_create_job_request`, which
+  /// has no `workload_id` field). See docs/architecture/workload-model.md,
+  /// "Job <-> Workload relationship".
+  std::optional<infra::WorkloadId> workload_id;
 };
 
 /// Application-level orchestration for job CRUD, sitting between the

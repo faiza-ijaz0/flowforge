@@ -123,5 +123,42 @@ TEST(InMemoryJobRepositoryTest, ListByStatusRespectsLimit) {
   EXPECT_EQ(limited->size(), 2u);
 }
 
+// Phase 3A: list_by_workload_id backs services::WorkloadService's progress
+// aggregation (see docs/architecture/workload-model.md).
+TEST(InMemoryJobRepositoryTest, ListByWorkloadIdReturnsOnlyMatchingJobs) {
+  InMemoryJobRepository repo;
+  const auto workload_id = infra::WorkloadId::generate();
+  const auto other_workload_id = infra::WorkloadId::generate();
+
+  domain::Job in_workload_1(infra::JobId::generate(), "default", "{}", domain::RetryPolicy{},
+                            std::chrono::system_clock::now(), 0, "user.process", workload_id);
+  domain::Job in_other_workload(infra::JobId::generate(), "default", "{}", domain::RetryPolicy{},
+                                std::chrono::system_clock::now(), 0, "user.process", other_workload_id);
+  domain::Job without_workload = make_job();
+  domain::Job in_workload_2(infra::JobId::generate(), "default", "{}", domain::RetryPolicy{},
+                            std::chrono::system_clock::now(), 0, "user.process", workload_id);
+
+  ASSERT_TRUE(repo.insert(in_workload_1).has_value());
+  ASSERT_TRUE(repo.insert(in_other_workload).has_value());
+  ASSERT_TRUE(repo.insert(without_workload).has_value());
+  ASSERT_TRUE(repo.insert(in_workload_2).has_value());
+
+  auto found = repo.list_by_workload_id(workload_id, 10);
+  ASSERT_TRUE(found.has_value());
+  ASSERT_EQ(found->size(), 2u);
+  EXPECT_EQ((*found)[0].id(), in_workload_1.id());
+  EXPECT_EQ((*found)[1].id(), in_workload_2.id());
+}
+
+TEST(InMemoryJobRepositoryTest, ListByWorkloadIdReturnsEmptyWhenNoJobsMatch) {
+  InMemoryJobRepository repo;
+  domain::Job job = make_job();
+  ASSERT_TRUE(repo.insert(job).has_value());
+
+  auto found = repo.list_by_workload_id(infra::WorkloadId::generate(), 10);
+  ASSERT_TRUE(found.has_value());
+  EXPECT_TRUE(found->empty());
+}
+
 }  // namespace
 }  // namespace flowforge::persistence

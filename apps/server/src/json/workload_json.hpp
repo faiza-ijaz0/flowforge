@@ -5,6 +5,7 @@
 #include "flowforge/domain/job.hpp"
 #include "flowforge/domain/workload.hpp"
 #include "flowforge/result.hpp"
+#include "flowforge/services/user_import.hpp"
 #include "flowforge/services/workload_service.hpp"
 
 namespace flowforge::server {

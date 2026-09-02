@@ -253,8 +253,9 @@ pages, and the `queued_items`/`running_items` progress breakdown originally defe
   the read-time query cost (§8) becomes a real problem at scale. This is an additive change to
   `JobExecutor` (a hot, heavily-tested, concurrency-sensitive class) deliberately deferred rather
   than made speculatively.
-- **Asynchronous workload submission.** `create_workload()`/`create_user_import_workload()` both
-  dispatch every item's job synchronously within the HTTP request; a future phase might instead
+- **Asynchronous workload submission.** `create_workload()` (and `import_users_from_csv()`, which
+  calls it) dispatches every item's job synchronously within the HTTP request; a future phase might
+  instead
   persist the workload immediately (`Pending`), respond, and dispatch items in the background
   (`Queued` becomes observable -- see §3) for very large imports where the 1000-item bound (§6) is
   insufficient. See [`user-import.md`](user-import.md) §12 for the rest of Phase 3B's own deferred
@@ -263,6 +264,11 @@ pages, and the `queued_items`/`running_items` progress breakdown originally defe
   is forward-looking, not yet exercised.
 - **Other concrete workload types** (image processing, email jobs, report generation, webhook
   processing, data exports) -- the abstraction (§1) is generic; only `user.process` is implemented.
+  Phase 3C added the source-/target-agnostic `POST /api/v1/process` front door and the
+  `IInputExtractor`/`StructuredRecord` extraction pipeline on top of this same `WorkloadService` --
+  see [`input-processing.md`](input-processing.md) -- but still only `product.process`/
+  `category.process` names exist as future `ProcessingTarget` mappings; neither has a handler or an
+  import adapter yet.
 
 ## 10. What's real vs. interface-only
 
@@ -271,9 +277,12 @@ pages, and the `queued_items`/`running_items` progress breakdown originally defe
 | `domain::Workload`, `WorkloadStatus`, `derive_workload_status`, `classify_job_status_for_workload` | **Real**, unit tested. Four-bucket progress (`queued_items`/`running_items`/`completed_items`/`failed_items`) since Phase 3B. |
 | `IWorkloadRepository` | **Real, two implementations** (`InMemoryWorkloadRepository`, `postgres::PostgresWorkloadRepository`), selected the same way every other repository is (`persistence::create_repositories`). |
 | `Job::workload_id()` / `IJobRepository::list_by_workload_id` | **Real**, both persistence backends. `list_by_workload_id` gained pagination (`offset`) in Phase 3B. |
-| `WorkloadService` | **Real** -- creates workloads (JSON items or CSV, see `user-import.md`), creates+schedules each item's job via the existing `JobService`/`IScheduler`, computes live progress, paginated item retrieval (Phase 3B). |
+| `WorkloadService` | **Real, and fully generic** -- knows nothing about "user"/"CSV"/any business domain (Phase 3B removed a CSV-specific method that had briefly lived here -- see `user-import.md` §1.1). Creates workloads from a JSON `items` array, creates+schedules each item's job via the existing `JobService`/`IScheduler`, computes live progress, paginated item retrieval. |
+| `services::import_users_from_csv` | **Real (Phase 3B)** -- the CSV-specific adapter *outside* `WorkloadService` that composes `parse_user_import_csv` with `WorkloadService::create_workload`. See `user-import.md` §1.1 for why, and the template it sets for future business workloads. |
 | `handlers::UserProcessHandler` | **Real**, registered as `"user.process"`. Deterministic validation/normalization (now shared with the CSV import path via `domain::validate_and_normalize_user_record`, Phase 3B), no external I/O. |
 | `POST`/`GET /api/v1/workloads`, `GET /api/v1/workloads/{id}/items` | **Real**, full HTTP integration test coverage. |
-| `POST /api/v1/workloads/user-imports` (CSV upload) | **Real (Phase 3B)** -- see `user-import.md`. |
+| `POST /api/v1/workloads/user-imports` (CSV upload) | **Real (Phase 3B)** -- thin route calling `import_users_from_csv`, see `user-import.md`. |
 | `/users`, `/workloads/{id}` dashboard pages | **Real (Phase 3B)** -- see `user-import.md` §10. |
+| `POST /api/v1/process` (source-/target-agnostic input processing) | **Real for CSV+Users only (Phase 3C)** -- delegates to `import_users_from_csv`; every other combination returns a clear "not yet supported" error. See `input-processing.md`. |
+| `/processing` dashboard page | **Real (Phase 3C)** -- see `input-processing.md` §10. |
 | `JobExecutor` progress callback | **Not built** -- progress is computed on read (§3), not pushed on write. |

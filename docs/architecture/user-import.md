@@ -9,13 +9,31 @@ runs through, completely unchanged) rather than replacing either.
 
 ## 1. What changed, and what didn't
 
-The product goal: a user opens `/users` in the dashboard, uploads a CSV, sees a validation preview,
-starts the import, and watches real progress as FlowForge's existing engine processes every row.
+The product goal is broader than User Import: FlowForge is a reusable C++ processing engine behind
+several planned business-workload sections of one web application (`/users` today; `/products`,
+`/categories` later), each following the identical shape --
+
+```
+Next.js Web Application
+        |
+   FlowForge API
+        |
+C++ Processing Engine
+        |
+Scheduler / Worker Pool / Executor
+        |
+    PostgreSQL
+```
+
+-- with **one** engine underneath all of them, never a per-section copy of the scheduler/worker
+pool/executor. User Import is the first concrete instance of this pattern, and its own immediate
+goal: a user opens `/users` in the dashboard, uploads a CSV, sees a validation preview, starts the
+import, and watches real progress as FlowForge's existing engine processes every row.
 
 ```
 CSV upload
     |
-Workload created  (services::WorkloadService::create_user_import_workload)
+Workload created  (services::import_users_from_csv, a thin CSV-specific adapter -- see below)
     |
 One Job per valid row  (services::JobService -- unchanged)
     |
@@ -33,13 +51,56 @@ Dashboard progress (polling GET /api/v1/workloads/{id})
 ```
 
 Nothing below "Workload created" is new. This phase adds exactly two things to the engine: a CSV
-parser (`services::parse_user_import_csv`) and one new `WorkloadService` method
-(`create_user_import_workload`) that parses a CSV and then calls the *existing*
+parser (`services::parse_user_import_csv`) and a small adapter function
+(`services::import_users_from_csv`) that parses a CSV and then calls the *existing*
 `WorkloadService::create_workload` (Phase 3A) -- the same create-then-schedule loop that already
 creates and dispatches one `Job` per item through `JobService`/`PriorityScheduler`. There is no
 second scheduler, no second executor, and no second handler: `UserProcessHandler` is reused exactly
 as it was in Phase 3A, unmodified except that its validation/normalization logic was extracted into
 a function shared with the CSV parser (see §4).
+
+### 1.1 Why `import_users_from_csv` isn't a `WorkloadService` method
+
+An earlier iteration of this feature put CSV-import orchestration directly on `WorkloadService`
+(`WorkloadService::create_user_import_workload()`). That was corrected: `WorkloadService` is the
+one, reusable engine service every future business workload shares, and a method hardcoding
+`request.type = "user.process"` onto it would force every future workload (`product.process`,
+`category.process`, ...) to add its *own* similarly-hardcoded method to the same shared class --
+coupling the generic engine to each specific business domain, one method at a time, exactly what
+this architecture must avoid.
+
+Instead, `import_users_from_csv` (`engine/include/flowforge/services/user_import.hpp`) is a
+standalone free function: the **per-business-domain adapter** that composes a domain-specific CSV
+parser (`parse_user_import_csv`) with the engine's generic, domain-agnostic workload-creation path
+(`WorkloadService::create_workload`). `WorkloadService` itself has zero knowledge that "user" or
+"CSV" exist -- grep its header and implementation and neither word appears. The CSV tokenizer
+underneath the parser is generic too (`infra::tokenize_csv`/`infra::is_valid_utf8`,
+`engine/include/flowforge/infra/csv.hpp`), so a future CSV-based import doesn't reimplement RFC 4180
+parsing from scratch.
+
+A future `product.process` CSV import follows the identical, mechanical pattern, entirely additive
+and entirely outside `WorkloadService`:
+
+- `domain::product_record.hpp`/`.cpp` -- `NormalizedProductRecord`,
+  `validate_and_normalize_product_record`, `serialize_product_record_as_job_payload` (mirrors
+  `domain::user_record.hpp`).
+- `services::product_import_parser.hpp`/`.cpp` -- `parse_product_import_csv`, reusing
+  `infra::tokenize_csv` (mirrors `user_import_parser.hpp`).
+- `services::product_import.hpp`/`.cpp` -- `import_products_from_csv(WorkloadService&, csv, ...)`,
+  calling `workload_service.create_workload({.type = "product.process", ...})` (mirrors
+  `user_import.hpp`).
+- `handlers::ProductProcessHandler` registered as `"product.process"` (mirrors
+  `handlers::UserProcessHandler`; `HandlerRegistry` needs no change -- it already maps any
+  `job_type` string to a handler).
+- `apps/server`: a new `product_json.hpp`/`.cpp` and a `POST /api/v1/workloads/product-imports`
+  route (mirrors `workload_json.cpp`/`workload_routes.cpp`'s user-import endpoint).
+- Frontend: a `/products` page and a `ProductImportWizard` component (its own CSV columns), reusing
+  `<WorkloadProgressPanel>`/`<WorkloadItemsTable>`/`/workloads/[id]` **unchanged** -- those are
+  already generic (see §10).
+
+None of this touches `WorkloadService`, `JobService`, `PriorityScheduler`, `LocalWorkerPool`,
+`JobExecutor`, `IJobRepository`, `IWorkloadRepository`, `HandlerRegistry`, or the `workloads`/`jobs`
+schema. That is the concrete meaning of "one engine, multiple business workloads" for this codebase.
 
 ## 2. CSV contract
 
@@ -150,9 +211,9 @@ cancellation (a non-retryable `ExecutionResult::failure`), exactly as in Phase 3
 
 ## 5. Bulk submission semantics
 
-`WorkloadService::create_user_import_workload()` first calls `parse_user_import_csv()`, then --
-only if that succeeds structurally -- delegates to the existing `create_workload()` for the valid
-rows. This produces a clean split:
+`services::import_users_from_csv()` (§1.1) first calls `parse_user_import_csv()`, then -- only if
+that succeeds structurally -- delegates to `WorkloadService::create_workload()` for the valid rows.
+This produces a clean split:
 
 - **Whole-file rejection** (nothing created at all): empty/oversized file, invalid UTF-8, missing
   header row, missing/unrecognized/duplicate header column, an unterminated quoted field, or more
@@ -234,9 +295,9 @@ that ever becomes necessary.
   construction, so a name like `<script>` in a CSV row is inert everywhere it's displayed.
 - **Email/phone input**: validated structurally (§2.1); never interpreted as executable content
   anywhere in the pipeline.
-- **Error leakage / raw CSV logging**: `WorkloadService` logs `workload_id`/row counts/rejection
-  *reasons* on a parse failure -- never the uploaded file's raw bytes (see
-  `create_user_import_workload`'s implementation comment). A 5xx-classified error's message is
+- **Error leakage / raw CSV logging**: `import_users_from_csv` logs `workload_id`/row counts/
+  rejection *reasons* on a parse failure -- never the uploaded file's raw bytes (see its
+  implementation comment). A 5xx-classified error's message is
   still sanitized by the existing, shared `to_error_body()` (`apps/server/src/http/
   error_response.cpp`, Phase 2B-5, unchanged) before it ever reaches an HTTP response; a 4xx
   validation message (e.g. "CSV header is missing the required 'email' column") is always
@@ -245,7 +306,7 @@ that ever becomes necessary.
   (`postgres_workload_repository.cpp`, `postgres_job_repository.cpp`) already used
   `pqxx::work::exec_params` before this phase; nothing new concatenates a value into SQL text.
 - **Denial of service via huge imports**: the 1000-row/2 MiB bounds (§2.1) cap the cost of a single
-  upload; `create_user_import_workload` processes the whole request synchronously (§9), so an
+  upload; `import_users_from_csv` processes the whole request synchronously (§9), so an
   attacker cannot use this endpoint to queue unbounded background work either -- the request itself
   bounds the work.
 
@@ -329,8 +390,8 @@ delivery mechanism would.
 
 - Chunked/streamed upload for files larger than this phase's 2 MiB/1000-row bounds.
 - Asynchronous workload submission (create the `Workload` row immediately, dispatch jobs in the
-  background) -- not needed while `create_user_import_workload` comfortably completes within one
-  HTTP request at this phase's scale.
+  background) -- not needed while `import_users_from_csv` comfortably completes within one HTTP
+  request at this phase's scale.
 - A `JobExecutor` -> `WorkloadRepository` progress-push callback, replacing the read-time
   aggregation in §6, if that read cost ever becomes a real problem (see workload-model.md §9).
 - Server-push progress updates (SSE), replacing polling (§9), if update frequency or viewer count
@@ -338,3 +399,9 @@ delivery mechanism would.
 - `DELETE /api/v1/workloads/{id}` and any workload-level cancellation.
 - Any workload type other than `user.process` (image processing, email jobs, report generation,
   webhook processing, data exports) -- see workload-model.md §1 and §9.
+
+Phase 3C ([`input-processing.md`](input-processing.md)) added `POST /api/v1/process`, a
+source-/target-agnostic front door that -- for the one combination it implements, CSV + Users --
+delegates straight to `import_users_from_csv()` (§1.1 above), unchanged by that phase. It did not
+replace or duplicate anything in this document; `POST /api/v1/workloads/user-imports` remains the
+CSV+Users-specific endpoint, still fully valid to call directly.

@@ -189,64 +189,16 @@ TEST_F(WorkloadServiceTest, ListWorkloadsReturnsEnrichedProgress) {
   }
 }
 
-// --- CSV user import (Phase 3B) -------------------------------------------
-
-TEST_F(WorkloadServiceTest, CreateUserImportWorkloadCreatesJobsForValidRowsOnly) {
-  const std::string csv =
-      "name,email\n"
-      "Alice Khan,ALICE@example.com\n"
-      ",blank-name@example.com\n"
-      "Bob,bob@example.com\n";
-  auto result = service->create_user_import_workload(csv);
-  ASSERT_TRUE(result.has_value()) << result.error().message();
-  EXPECT_EQ(result->total_rows, 3u);
-  EXPECT_EQ(result->valid_rows, 2u);
-  EXPECT_EQ(result->invalid_rows, 1u);
-  ASSERT_EQ(result->rejected_rows.size(), 1u);
-  EXPECT_EQ(result->rejected_rows[0].row_number, 2u);
-  EXPECT_EQ(result->workload.total_items(), 2u);
-  EXPECT_EQ(result->items.size(), 2u);
-
-  auto jobs = job_repository->list_by_workload_id(result->workload.id(), 10, 0);
-  ASSERT_TRUE(jobs.has_value());
-  ASSERT_EQ(jobs->size(), 2u);
-  for (const auto& job : *jobs) {
-    EXPECT_EQ(job.job_type(), "user.process");
-    // The normalized (trimmed/lowercased) record is what gets serialized
-    // as the Job's payload -- see domain::serialize_user_record_as_job_payload.
-    EXPECT_NE(job.payload().find("\"name\""), std::string::npos);
-    EXPECT_NE(job.payload().find("\"email\""), std::string::npos);
-  }
-}
-
-TEST_F(WorkloadServiceTest, CreateUserImportWorkloadRejectsStructurallyInvalidCsvWithoutCreatingAWorkload) {
-  auto result = service->create_user_import_workload("");
-  ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().code(), ErrorCode::Validation);
-
-  auto listed = service->list_workloads(10, 0);
-  ASSERT_TRUE(listed.has_value());
-  EXPECT_TRUE(listed->empty());
-}
-
-TEST_F(WorkloadServiceTest, CreateUserImportWorkloadWithAllInvalidRowsStillCreatesWorkload) {
-  const std::string csv = "name,email\n,not-an-email\n";
-  auto result = service->create_user_import_workload(csv);
-  ASSERT_TRUE(result.has_value()) << result.error().message();
-  EXPECT_EQ(result->total_rows, 1u);
-  EXPECT_EQ(result->valid_rows, 0u);
-  EXPECT_EQ(result->invalid_rows, 1u);
-  EXPECT_EQ(result->workload.total_items(), 0u);
-  EXPECT_EQ(result->workload.status(), domain::WorkloadStatus::Succeeded);
-}
-
 TEST_F(WorkloadServiceTest, ListItemsReturnsBoundedPageAndTotal) {
-  const std::string csv =
-      "name,email\n"
-      "Alice,alice@example.com\n"
-      "Bob,bob@example.com\n"
-      "Carol,carol@example.com\n";
-  auto created = service->create_user_import_workload(csv);
+  // list_items() is generic (works for any workload type) -- its test
+  // setup deliberately does not go through CSV import (see
+  // engine/tests/services/user_import_test.cpp for that path's own
+  // coverage) so this test cannot be mistaken for depending on it.
+  CreateWorkloadRequest request{.type = "user.process",
+                                .items = {{R"({"name":"Alice","email":"alice@example.com"})"},
+                                          {R"({"name":"Bob","email":"bob@example.com"})"},
+                                          {R"({"name":"Carol","email":"carol@example.com"})"}}};
+  auto created = service->create_workload(request);
   ASSERT_TRUE(created.has_value()) << created.error().message();
   const std::string workload_id = created->workload.id().value();
 

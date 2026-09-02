@@ -7,6 +7,7 @@ add_library(flowforge_engine STATIC
   src/infra/logger.cpp
   src/infra/config.cpp
   src/infra/metrics.cpp
+  src/infra/csv.cpp
   src/domain/job.cpp
   src/domain/workflow.cpp
   src/domain/worker.cpp
@@ -14,6 +15,8 @@ add_library(flowforge_engine STATIC
   src/domain/execution_result.cpp
   src/domain/workload.cpp
   src/domain/user_record.cpp
+  src/domain/input_source.cpp
+  src/domain/processing_target.cpp
   src/engine/handler_registry.cpp
   src/engine/priority_scheduler.cpp
   src/engine/job_executor.cpp
@@ -24,11 +27,14 @@ add_library(flowforge_engine STATIC
   src/handlers/transform_handler.cpp
   src/handlers/user_process_handler.cpp
   src/handlers/builtin_handlers.cpp
+  src/extractors/csv_extractor.cpp
   src/persistence/in_memory_repositories.cpp
   src/persistence/repository_factory.cpp
   src/services/job_service.cpp
   src/services/workload_service.cpp
   src/services/user_import_parser.cpp
+  src/services/user_import.cpp
+  src/services/input_processing_service.cpp
 )
 
 add_library(flowforge::engine ALIAS flowforge_engine)

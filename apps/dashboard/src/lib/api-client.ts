@@ -4,6 +4,7 @@ import type {
   CreateJobResponse,
   CreateWorkloadInput,
   CreateWorkloadResponse,
+  InputSourceType,
   Job,
   ListAttemptsResponse,
   ListJobsResponse,
@@ -11,6 +12,8 @@ import type {
   ListWorkflowsResponse,
   ListWorkloadItemsResponse,
   ListWorkloadsResponse,
+  ProcessingTarget,
+  ProcessResponse,
   UserImportResponse,
   Workload,
 } from "@flowforge/shared";
@@ -115,4 +118,17 @@ export const apiClient = {
     request<ListWorkloadItemsResponse>(
       `/api/v1/workloads/${encodeURIComponent(id)}/items?limit=${limit}&offset=${offset}`,
     ),
+
+  // Phase 3C: the source-/target-agnostic Processing Center entry point
+  // (see docs/architecture/input-processing.md). Today only source="csv"
+  // combined with target="users" is feature-complete; every other
+  // combination is rejected by the server with a clear "not yet supported"
+  // error rather than a fake success.
+  process: (source: InputSourceType, target: ProcessingTarget, file: File) => {
+    const formData = new FormData();
+    formData.append("source", source);
+    formData.append("target", target);
+    formData.append("file", file, file.name);
+    return requestForm<ProcessResponse>("/api/v1/process", formData);
+  },
 };

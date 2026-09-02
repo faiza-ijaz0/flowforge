@@ -4,6 +4,7 @@ add_executable(flowforge_server_tests
   error_response_test.cpp
   workload_routes_test.cpp
   user_import_routes_test.cpp
+  process_routes_test.cpp
 )
 
 target_link_libraries(flowforge_server_tests

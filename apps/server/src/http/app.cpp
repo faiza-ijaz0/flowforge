@@ -8,6 +8,7 @@
 #include "http/cors.hpp"
 #include "http/routes/health_routes.hpp"
 #include "http/routes/job_routes.hpp"
+#include "http/routes/process_routes.hpp"
 #include "http/routes/worker_routes.hpp"
 #include "http/routes/workflow_routes.hpp"
 #include "http/routes/workload_routes.hpp"
@@ -118,6 +119,12 @@ App::App(infra::AppConfig config, std::shared_ptr<infra::Logger> logger,
       // declaration order).
       workload_service_(std::make_shared<services::WorkloadService>(
           workload_repository_, job_repository_, job_service_, scheduler, clock_, logger_, metrics_)),
+      // Phase 3C: composes workload_service_ -- see
+      // docs/architecture/input-processing.md. Never given its own
+      // repositories/scheduler; it only ever reaches them through
+      // workload_service_/the existing import functions.
+      input_processing_service_(
+          std::make_shared<services::InputProcessingService>(workload_service_, logger_, metrics_)),
       handler_registry_(std::move(handler_registry)),
       worker_pool_(std::move(worker_pool)),
       scheduler_(std::move(scheduler)),
@@ -159,7 +166,8 @@ void App::register_routes() {
   register_job_routes(http_, job_service_, scheduler_, worker_pool_, execution_manager_, metrics_);
   register_workflow_routes(http_, workflow_repository_);
   register_worker_routes(http_, worker_repository_);
-  register_workload_routes(http_, workload_service_, metrics_);
+  register_workload_routes(http_, workload_service_, logger_, metrics_);
+  register_process_routes(http_, input_processing_service_);
 
   http_.set_logger(
       [logger = logger_, metrics = metrics_](const httplib::Request& req, const httplib::Response& res) {

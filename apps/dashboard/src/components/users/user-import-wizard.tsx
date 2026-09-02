@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useId, useRef, useState } from "react";
 
 import type { UserImportResponse } from "@flowforge/shared";
@@ -90,13 +91,21 @@ export function UserImportWizard() {
                 {result.invalid_rows} invalid
               </p>
             </div>
-            <button
-              type="button"
-              onClick={reset}
-              className="shrink-0 rounded-md border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:bg-white/5"
-            >
-              New import
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Link
+                href={`/workloads/${result.id}`}
+                className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
+              >
+                View Processing Workload
+              </Link>
+              <button
+                type="button"
+                onClick={reset}
+                className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:bg-white/5"
+              >
+                New import
+              </button>
+            </div>
           </div>
           {result.rejected_rows.length > 0 && (
             <div className="mt-4">

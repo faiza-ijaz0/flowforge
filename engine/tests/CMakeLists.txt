@@ -11,6 +11,9 @@ add_executable(flowforge_engine_tests
   domain/execution_test.cpp
   domain/workload_test.cpp
   domain/user_record_test.cpp
+  domain/input_source_test.cpp
+  domain/processing_target_test.cpp
+  domain/structured_record_test.cpp
   engine/blocking_queue_test.cpp
   engine/thread_pool_test.cpp
   engine/handler_registry_test.cpp
@@ -25,12 +28,15 @@ add_executable(flowforge_engine_tests
   handlers/transform_handler_test.cpp
   handlers/delay_handler_test.cpp
   handlers/user_process_handler_test.cpp
+  extractors/csv_extractor_test.cpp
   persistence/in_memory_job_repository_test.cpp
   persistence/in_memory_execution_repository_test.cpp
   persistence/in_memory_workload_repository_test.cpp
   services/job_service_test.cpp
   services/workload_service_test.cpp
   services/user_import_parser_test.cpp
+  services/user_import_test.cpp
+  services/input_processing_service_test.cpp
 )
 
 target_link_libraries(flowforge_engine_tests

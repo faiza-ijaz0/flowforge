@@ -17,6 +17,7 @@
 #include "flowforge/infra/metrics.hpp"
 #include "flowforge/persistence/repository_factory.hpp"
 #include "flowforge/result.hpp"
+#include "flowforge/services/input_processing_service.hpp"
 #include "flowforge/services/job_service.hpp"
 #include "flowforge/services/workload_service.hpp"
 
@@ -67,6 +68,7 @@ class App {
   std::shared_ptr<persistence::IWorkloadRepository> workload_repository_;
   std::shared_ptr<services::JobService> job_service_;
   std::shared_ptr<services::WorkloadService> workload_service_;
+  std::shared_ptr<services::InputProcessingService> input_processing_service_;
   std::shared_ptr<engine::HandlerRegistry> handler_registry_;
   std::shared_ptr<engine::LocalWorkerPool> worker_pool_;
   std::shared_ptr<engine::PriorityScheduler> scheduler_;

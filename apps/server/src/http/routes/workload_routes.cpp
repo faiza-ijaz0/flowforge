@@ -2,6 +2,7 @@
 
 #include <charconv>
 
+#include "flowforge/services/user_import.hpp"
 #include "http/error_response.hpp"
 #include "json/workload_json.hpp"
 
@@ -31,6 +32,7 @@ void write_error(httplib::Response& res, const Error& error) {
 
 void register_workload_routes(httplib::Server& server,
                               const std::shared_ptr<services::WorkloadService>& workload_service,
+                              const std::shared_ptr<infra::Logger>& logger,
                               const std::shared_ptr<infra::MetricsRegistry>& metrics) {
   server.Post(
       "/api/v1/workloads", [workload_service, metrics](const httplib::Request& req, httplib::Response& res) {
@@ -76,28 +78,32 @@ void register_workload_routes(httplib::Server& server,
   // changes" -- multipart/form-data with a single "file" field, mirroring
   // how the rest of this phase reuses existing conventions rather than
   // inventing a parallel API shape.
-  server.Post("/api/v1/workloads/user-imports",
-              [workload_service](const httplib::Request& req, httplib::Response& res) {
-                if (!req.is_multipart_form_data()) {
-                  write_error(res, make_error(ErrorCode::Validation,
-                                              "request must be multipart/form-data with a 'file' field"));
-                  return;
-                }
-                if (!req.has_file("file")) {
-                  write_error(res, make_error(ErrorCode::Validation, "missing required 'file' field"));
-                  return;
-                }
+  server.Post("/api/v1/workloads/user-imports", [workload_service, logger, metrics](
+                                                    const httplib::Request& req, httplib::Response& res) {
+    if (!req.is_multipart_form_data()) {
+      write_error(
+          res, make_error(ErrorCode::Validation, "request must be multipart/form-data with a 'file' field"));
+      return;
+    }
+    if (!req.has_file("file")) {
+      write_error(res, make_error(ErrorCode::Validation, "missing required 'file' field"));
+      return;
+    }
 
-                const auto& file = req.get_file_value("file");
-                auto imported = workload_service->create_user_import_workload(file.content);
-                if (!imported) {
-                  write_error(res, imported.error());
-                  return;
-                }
+    const auto& file = req.get_file_value("file");
+    // The one place the CSV-upload route knows "user import"
+    // means "user.process" -- see user_import.hpp's class
+    // comment. WorkloadService itself never appears in this
+    // sentence.
+    auto imported = services::import_users_from_csv(*workload_service, file.content, logger, metrics);
+    if (!imported) {
+      write_error(res, imported.error());
+      return;
+    }
 
-                res.status = 201;
-                res.set_content(to_json(*imported).dump(), "application/json");
-              });
+    res.status = 201;
+    res.set_content(to_json(*imported).dump(), "application/json");
+  });
 
   server.Get("/api/v1/workloads", [workload_service](const httplib::Request& req, httplib::Response& res) {
     const std::size_t limit = parse_size_param(req, "limit", 50);

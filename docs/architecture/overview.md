@@ -1,15 +1,16 @@
 # FlowForge Architecture Overview
 
-This document describes FlowForge's architecture through Phase 3B (User Import): what exists, why
-it's shaped the way it is, and what is deliberately deferred. See
+This document describes FlowForge's architecture through Phase 3C (Input Processing Architecture):
+what exists, why it's shaped the way it is, and what is deliberately deferred. See
 [`execution-model.md`](execution-model.md) for the job execution/retry pipeline in full detail
 (§1–§21), [`workload-model.md`](workload-model.md) for the generic Workload/Batch abstraction
-(Phase 3A), and [`user-import.md`](user-import.md) for User Import (Phase 3B: CSV upload, the
+(Phase 3A), [`user-import.md`](user-import.md) for User Import (Phase 3B: CSV upload, the
 `/users`/`/workloads/{id}` dashboard pages, and the queued/running/succeeded/failed progress
-breakdown) in full detail — this document stays at the component/dependency-direction level. It is
-written to stay accurate as the system grows — when a deferred item is implemented, update the
-relevant section rather than
-leaving it stale.
+breakdown), and [`input-processing.md`](input-processing.md) for the source-/target-agnostic
+Processing Center foundation (Phase 3C: `POST /api/v1/process`, the `/processing` dashboard page,
+and why only CSV+Users is implemented today) in full detail — this document stays at the
+component/dependency-direction level. It is written to stay accurate as the system grows — when a
+deferred item is implemented, update the relevant section rather than leaving it stale.
 
 ## 1. Components and responsibilities
 
@@ -122,6 +123,7 @@ Exceptions are still used, deliberately, for programming errors and truly except
 | `IWorkflowRepository` writes | **Real for the backend**, but nothing in the HTTP API creates workflow rows yet (`GET /api/v1/workflows` is the only route) — workflow execution remains future scope. `IWorkerRepository` writes are real and used: `LocalWorkerPool` registers one row per worker at startup (Phase 2B-3). |
 | `JobService` (create/get/list/cancel/mark_queued) | **Real**, full validation, real HTTP integration test coverage (`apps/server/tests/http_server_test.cpp`), against both persistence backends. |
 | `domain::Workload`, `IWorkloadRepository`, `WorkloadService`, `handlers::UserProcessHandler` | **Real** — see [`workload-model.md`](workload-model.md) and [`user-import.md`](user-import.md). `POST`/`GET /api/v1/workloads` creates a workload and dispatches one job per item through the existing `JobService`/`PriorityScheduler` (no new scheduler/executor); `POST /api/v1/workloads/user-imports` (Phase 3B) does the same from an uploaded CSV. Progress (`queued_items`/`running_items`/`completed_items`/`failed_items`) is computed live from child `Job` rows, never a separately-persisted counter. The `/users` and `/workloads/{id}` dashboard pages are real (Phase 3B). |
+| `domain::InputSourceType`/`ProcessingTarget`/`StructuredRecord`, `engine::IInputExtractor`, `extractors::CsvExtractor`, `services::InputProcessingService` | **Real** — see [`input-processing.md`](input-processing.md). `POST /api/v1/process` (Phase 3C) is feature-complete for `source=csv`+`target=users` only (delegates to the same `import_users_from_csv` `/api/v1/workloads/user-imports` uses); every other `(source, target)` combination returns a `400` "not yet supported" error, never a fake success. No OCR/image-recognition/external-AI code exists anywhere in this codebase. The `/processing` dashboard page is real (Phase 3C); its target/source selectors visibly mark every unimplemented combination as disabled rather than silently doing nothing. |
 | `MetricsRegistry` | **Real, in-memory**, backs `GET /metrics`. Rendered as plain `name value` text, not Prometheus exposition format — see §8. |
 | PostgreSQL schema (`database/migrations/`) | **Real SQL, and now wired up** — `persistence::postgres::*` executes every migrated table via parameterized queries. See §7. |
 | Dashboard pages: Overview, Jobs, Workflows (list), Workers (list), Metrics | **Real HTTP calls** to the running server. |

@@ -73,5 +73,39 @@ TEST_F(OcrIntegrationTest, ImageExtractorProducesRealStructuredRecordsFromTheFix
   EXPECT_EQ(result->records[2].field("Email"), "john@example.com");
 }
 
+/// Phase 3D-2: real OCR + real table reconstruction against a 100-data-row
+/// fixture (`user_table_bulk_100.png` -- see docs/architecture/
+/// input-processing.md, "100+ record fixture"). Proves the generic,
+/// domain-agnostic extraction layer doesn't silently lose or merge rows
+/// at scale: `total_records` must be exactly 100 (every row the header
+/// implies is accounted for, whether it ends up a valid record or a
+/// reported structural rejection -- never neither), and every record
+/// still has the two generic columns (`Name`/`Email`) this extractor
+/// knows nothing more specific about than that.
+TEST_F(OcrIntegrationTest, ReconstructsAllHundredRowsFromTheBulkFixtureWithoutLosingAny) {
+  auto provider = std::make_shared<TesseractCliOcrProvider>(tesseract_path_);
+  extractors::ImageExtractor extractor(provider);
+  const std::string image_bytes = read_file(fixture_path("user_table_bulk_100.png"));
+  ASSERT_FALSE(image_bytes.empty()) << "bulk fixture image failed to load";
+
+  auto result = extractor.extract({.source_type = domain::InputSourceType::Image, .content = image_bytes});
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+
+  EXPECT_EQ(result->total_records, 100u);
+  EXPECT_EQ(result->records.size() + result->rejected_record_count, 100u);
+  // The large majority of 100 real, OCR'd rows must structurally parse
+  // into two-column records -- a near-total loss would indicate a real
+  // table-reconstruction regression, not ordinary OCR text-recognition
+  // noise (see ImageExtractorTest for the deterministic, non-OCR-
+  // dependent coverage of the reconstruction algorithm itself).
+  EXPECT_GE(result->records.size(), 90u);
+  for (const auto& record : result->records) {
+    EXPECT_TRUE(record.field("Name").has_value());
+    EXPECT_TRUE(record.field("Email").has_value());
+  }
+  ASSERT_TRUE(result->average_confidence.has_value());
+  EXPECT_GT(*result->average_confidence, 0.0);
+}
+
 }  // namespace
 }  // namespace flowforge::providers::test

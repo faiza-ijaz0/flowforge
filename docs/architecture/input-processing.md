@@ -1,17 +1,20 @@
-# FlowForge Input Processing Architecture (Phase 3C)
+# FlowForge Input Processing Architecture (Phase 3C, extended in Phase 3D-1)
 
 This document describes the architectural foundation for FlowForge accepting input from multiple
-*source* types (CSV today; Image, Screenshot, Text, and URL as future work) and routing it to
-multiple *processing targets* (Users today; Products and Categories as future work), all through
-the same engine every other workload already uses. It complements
+*source* types (CSV and, as of Phase 3D-1, Image/Screenshot; Text and URL remain future work) and
+routing it to multiple *processing targets* (Users today; Products and Categories as future work),
+all through the same engine every other workload already uses. It complements
 [`workload-model.md`](workload-model.md) (the generic Workload abstraction) and
 [`user-import.md`](user-import.md) (the first concrete, CSV+Users pipeline, unchanged by this
 phase) rather than replacing either.
 
-**This phase does not implement OCR, image recognition, or any external AI/LLM service.** The
-`Image`/`Screenshot`/`Text`/`Url` source types exist in the domain model so the architecture has a
-real place to grow into, but every one of them is rejected today with an explicit "not yet
-supported" error -- never a fake success. See §7.
+**Phase 3C did not implement OCR, image recognition, or any external AI/LLM service** -- the
+`Image`/`Screenshot` source types existed only as domain enum values, rejected with an explicit
+"not yet supported" error. **Phase 3D-1 (this revision) implements real OCR-based image
+extraction** for `(Image|Screenshot, Users)` via a real, locally-run Tesseract OCR engine -- see
+§13 onward. `Text` and `Url` remain unimplemented, exactly as before; every combination this
+document doesn't describe as implemented is still rejected with an honest, non-fake `400`, never a
+silent no-op or fabricated success.
 
 ## 1. What this phase adds
 
@@ -224,17 +227,26 @@ vs. `rejected_rows`) -- this is a direct consequence of delegating to the same u
 
 ## 7. What is, and is not, implemented
 
-**Implemented and feature-complete**: `source=csv`, `target=users`. Uploads a CSV, creates a real
-`Workload`, dispatches one real `user.process` `Job` per valid row through the unchanged
-scheduler/worker-pool/executor pipeline, persists to PostgreSQL -- identical in every observable
-way to `POST /api/v1/workloads/user-imports` (§5).
+**Implemented and feature-complete (direct `POST /api/v1/process`)**: `source=csv`, `target=users`.
+Uploads a CSV, creates a real `Workload`, dispatches one real `user.process` `Job` per valid row
+through the unchanged scheduler/worker-pool/executor pipeline, persists to PostgreSQL -- identical
+in every observable way to `POST /api/v1/workloads/user-imports` (§5).
 
-**Explicitly not implemented, and never faked**: every other `(source, target)` pair --
-`image`/`screenshot`/`text`/`url` for any target, and `products`/`categories` for any source
-(including `csv`). Each returns the `400` "not yet supported" response in §6.1. No OCR, image
-recognition, or external AI/LLM call happens anywhere in this codebase for `image`/`screenshot`;
-those source types exist only as domain enum values and rejected-at-validation strings. There is no
-code path, tested or otherwise, that returns a `201` for any of these combinations.
+**Implemented via preview + confirm (Phase 3D-1, §13 onward)**: `source=image` or `screenshot`,
+`target=users`, when a Tesseract OCR binary is available on the machine running the server (see
+§16, "Why the Tesseract CLI, not libtesseract"). `POST /api/v1/process/preview` runs real OCR (no
+mock, no hardcoded sample records) and returns extracted, normalized records without creating
+anything; `POST /api/v1/process/confirm` submits them into the same real workload pipeline CSV
+uses. `image`/`screenshot` are deliberately **never** accepted by direct `POST /api/v1/process` --
+see §17, "Why `process()` never accepts `Image`/`Screenshot`". If no Tesseract binary is found at
+server startup, `preview()` cleanly returns the same "not yet supported" `400` as before -- never a
+crash, never a fake extraction.
+
+**Explicitly not implemented, and never faked**: `text`/`url` for any target, and
+`products`/`categories` for any source (including `csv` and `image`). Each returns the `400` "not
+yet supported" response in §6.1. No external AI/LLM call happens anywhere in this codebase for any
+source type -- image extraction is 100% local (§16). There is no code path, tested or otherwise,
+that returns a successful extraction or a `201` for any of these combinations.
 
 ## 8. Security review
 
@@ -298,27 +310,369 @@ the new endpoint:
 
 ## 11. Known limitations
 
-- `CsvExtractor`/`StructuredRecord`/`IInputExtractor` are real and tested but are not on any
-  request path this phase actually serves end-to-end (§5) -- they are foundation for a future
-  target, not yet exercised by a live HTTP endpoint.
-- `Image`/`Screenshot`/`Text`/`Url` are domain-modeled enum values with no corresponding extractor,
-  by design (§7) -- adding a real one is a distinct future phase's scope, not partially started
-  here.
+- `CsvExtractor`/`StructuredRecord`/`IInputExtractor` are real and tested but `CsvExtractor`
+  specifically is still not on any request path this phase actually serves end-to-end (§5) -- it
+  is foundation for a future CSV-consuming target, not yet exercised by a live HTTP endpoint.
+  `extractors::ImageExtractor` (Phase 3D-1), by contrast, *is* on a live path (`preview`/`confirm`).
+- `Text`/`Url` are still domain-modeled enum values with no corresponding extractor, by design
+  (§7) -- adding a real one is a distinct future phase's scope, not partially started here.
 - `Products`/`Categories` have `job_type_for_processing_target` mappings (`"product.process"`/
   `"category.process"`) but no registered `IJobHandler` for either job type and no
   `import_products_from_csv`/`import_categories_from_csv` adapter -- consistent with
-  `user-import.md` §1.1's stated future path, still entirely unbuilt.
+  `user-import.md` §1.1's stated future path, still entirely unbuilt. Image extraction for these
+  targets is therefore also unbuilt, even though the OCR pipeline itself is target-agnostic in
+  principle (§18).
 - `<ProcessingUploadPanel>` has no client-side CSV preview, unlike `<UserImportWizard>` -- a
   deliberate scope choice (§10), not an oversight.
+- The table-reconstruction heuristic (§14) is genuinely real but is a heuristic, not true layout
+  analysis: it can mis-split a cell containing an unusually wide internal gap (e.g. a long dash) or
+  under-split two visually close columns. Rows it cannot square with the header's column count are
+  rejected, never silently guessed at (§14) -- but a row that *does* parse can still contain a
+  wrong split in a genuinely ambiguous image. This is why the product's own design puts a mandatory
+  human preview/confirm step in front of every image-sourced record (§15/§17), unlike CSV's
+  deterministic parse.
+- OCR accuracy depends on image quality (resolution, contrast, font, skew) like any OCR system;
+  `average_confidence`/`warnings` (§13) surface this to the user rather than hiding it, but do not
+  improve it.
 
 ## 12. Deferred to a future phase
 
-- A real `Image`/`Screenshot` extractor backed by OCR or an external vision service, and a `Text`/
-  `Url` extractor -- explicitly out of scope for this phase (see this document's opening note).
+- A real `Text`/`Url` extractor -- explicitly out of scope for this phase (see this document's
+  opening note).
 - `product.process`/`category.process` handlers and their CSV-import adapters, following the
-  mechanical pattern `user-import.md` §1.1 and this document's §5 both lay out.
+  mechanical pattern `user-import.md` §1.1 and this document's §5 both lay out. Once built, the
+  same `IOcrProvider`/`ImageExtractor` pipeline (§13-§14) could in principle serve
+  Image+Products/Categories too, through their own mapping adapters (mirroring §15) -- not started
+  this phase.
 - An `ExtractorRegistry` mirroring `HandlerRegistry`, once a second concrete `IInputExtractor`
-  exists to justify one (today there is exactly one, so a registry would be unused indirection).
+  needing dynamic dispatch exists to justify one (today `InputProcessingService` holds `CsvExtractor`
+  and `ImageExtractor` -- unused and injected, respectively -- directly, no registry).
 - Migrating `/api/v1/workloads/user-imports`/`import_users_from_csv` onto the
   `CsvExtractor`/`StructuredRecord` pipeline, if and when a second CSV-consuming target makes the
   shared intermediate representation actually pay for itself (§5).
+- A cloud/vision-API `IOcrProvider` implementation as an alternative to the local Tesseract CLI
+  (§16) -- the interface already supports this; no such implementation exists or is called by
+  anything in this codebase.
+- Server-side preview-session storage (a `preview_id` the client references instead of
+  round-tripping full record data to `confirm`) -- deliberately not built this phase; see §15's
+  rationale for why the current stateless design is preferred for now.
+
+---
+
+# Phase 3D-1: Image/Screenshot input pipeline
+
+The intended final pipeline for an image-sourced record:
+
+```
+Image/Screenshot
+  |
+Validation (infra::validate_image -- size + real file-signature bytes)
+  |
+IOcrProvider::recognize()  (TesseractCliOcrProvider -- a real, local OCR engine)
+  |
+ImageExtractor  (table-reconstruction heuristic over OCR word boxes -> StructuredRecord)
+  |
+map_structured_records_to_users  (target-specific field mapping + domain::validate_and_normalize_user_record)
+  |
+PreviewResult  (POST /api/v1/process/preview -- creates nothing)
+  |
+  ...human reviews the table, clicks "Process Valid Records"...
+  |
+ConfirmRequest -> InputProcessingService::confirm()  (POST /api/v1/process/confirm)
+  |
+WorkloadService::create_workload()
+  |
+Jobs -> PriorityScheduler -> LocalWorkerPool -> JobExecutor -> PostgreSQL
+```
+
+**Extraction** (turning pixels into generic `StructuredRecord`s) and **processing** (turning
+records into `Workload`/`Job` rows) are deliberately two different operations reachable through two
+different endpoints (`/preview` vs. `/confirm`) -- see §15 and §17. Nothing before the human's
+explicit confirm click ever writes to PostgreSQL.
+
+## 13. Image input model and validation
+
+`domain::InputPayload` (§2, Phase 3C) is reused unchanged: `{source_type: Image|Screenshot,
+content: <raw image bytes>}`. No new domain type was needed -- the phase 3C doc comment on
+`InputPayload` already anticipated this ("a future `Image`/`Screenshot` implementation would store
+raw image bytes here the same way").
+
+**Why `Image` and `Screenshot` share one extractor.** To an OCR engine, a screenshot is just an
+image -- there is no pixel-level distinction between "a photo of a printed table" and "a screen
+capture of a table rendered in a browser" that would justify two separate extraction code paths.
+`extractors::ImageExtractor::source_type()` reports `Image` as its nominal identity (`
+IInputExtractor` has room for exactly one), but `extract()` explicitly accepts both
+`InputSourceType::Image` and `::Screenshot` payloads (`engine/src/extractors/image_extractor.cpp`).
+`InputProcessingService::preview()`'s `is_image_source()` helper mirrors this. If a future source
+type ever needs genuinely different handling (e.g. a PDF page image with known DPI metadata), it
+gets its own extractor at that point -- this is not a limitation baked into the architecture, just
+the honest state of what two visually-identical input shapes need today.
+
+**Image validation** (`infra::validate_image`, `engine/include/flowforge/infra/image_format.hpp`)
+runs before anything else touches the bytes:
+
+- **Size**: rejected above `kMaxImageBytes` (6 MiB) -- below the server's coarse 8 MiB
+  request-body cap (`apps/server/src/http/app.cpp`), so this specific, clear message is what a
+  caller actually sees for an oversized image, not httplib's generic body-too-large behavior.
+- **Format, by real file-signature bytes, never by trusted MIME type or extension.** PNG (`89 50
+  4E 47 0D 0A 1A 0A`), JPEG (`FF D8 FF`), and WebP (`RIFF....WEBP`, checking both fixed spans around
+  the variable chunk-size field) are the only three formats accepted -- the three Tesseract's
+  bundled Leptonica image-decoding library reliably reads. See §16, "Security: image validation"
+  for why signature-sniffing (not the client-supplied `Content-Type` or filename) is the only
+  input this check trusts.
+- An empty upload, or one whose leading bytes match none of the three signatures (including a
+  well-formed image in an unsupported format, e.g. GIF, BMP, TIFF), is rejected with a single
+  generic message ("unsupported or corrupt image -- only PNG, JPEG, and WebP are supported") --
+  deliberately not distinguishing "wrong format" from "corrupt bytes claiming to be one of the
+  three", since neither case should leak parser-internals detail to a caller.
+
+`extractors::ImageExtractor::extract()` runs this same check again (defense in depth: `IOcrProvider`
+is a general-purpose interface a future caller could invoke directly, not only through
+`ImageExtractor`) before ever invoking the OCR provider -- an invalid image never reaches, and
+therefore never wastes CPU/process-spawn cost on, the OCR engine.
+
+## 14. Extraction: `IOcrProvider`, `TesseractCliOcrProvider`, and table reconstruction
+
+**`engine::IOcrProvider`** (`engine/include/flowforge/engine/ocr_provider.hpp`) is the swappable
+seam between FlowForge and whatever technology actually reads text out of pixels -- one method,
+`recognize(image_bytes) -> Result<OcrResult>`, where `OcrResult` is a flat list of `OcrWord`
+(recognized text, a bounding box, a confidence score, and the OCR engine's own
+block/paragraph/line grouping). No FlowForge type outside this file and its implementations knows a
+concrete OCR vendor exists -- `extractors::ImageExtractor` depends only on this interface, so
+swapping providers (a different local engine, a cloud vision API) is a new `IOcrProvider`
+implementation, never a change to `ImageExtractor`, `StructuredRecord`, or anything upstream.
+
+**`providers::TesseractCliOcrProvider`** (`engine/include/flowforge/providers/
+tesseract_ocr_provider.hpp`) is the one concrete implementation this phase ships -- see §16 for why
+it shells out to the Tesseract CLI rather than linking `libtesseract` directly. It writes the
+(already-validated) image bytes to a process-unique temporary file, runs `tesseract <file>
+<output_base> -l eng --psm 6 tsv` (word-level bounding boxes + per-word confidence -- never just
+plain text, since `ImageExtractor` needs the boxes to reconstruct table structure), reads back the
+resulting `.tsv` file, and deletes both temporary files before returning, on every return path
+(success, OCR failure, or timeout) -- see §16, "Security: temporary file handling".
+`TesseractCliOcrProvider::discover_executable()` probes `FLOWFORGE_TESSERACT_PATH`, then `PATH`,
+then the standard per-platform install locations, actually running `--version` against each
+candidate (not just checking the file exists) -- `apps/server/src/http/app.cpp` calls this once at
+startup and wires a real `ImageExtractor` in only if it succeeds, so a deployment without Tesseract
+installed gets a clean, always-"not supported" `preview()` rather than a crash on first use.
+
+**`extractors::ImageExtractor`** (`engine/include/flowforge/extractors/image_extractor.hpp`)
+implements `engine::IInputExtractor` exactly like `CsvExtractor` (§3): `extract()` validates,
+invokes the injected `IOcrProvider`, and turns the result into `domain::StructuredRecord`s. Its
+job past that point is genuinely new: **table reconstruction**, a real (if heuristic) generic
+layout algorithm, not business-domain aware --
+
+1. **Group words into lines** using the OCR engine's own `block_num`/`par_num`/`line_num`
+   hierarchy (preserving first-seen order, i.e. natural reading order -- never re-sorted by `top`
+   alone, which would misorder a genuinely multi-column page layout).
+2. **Split each line into columns** by sorting its words left-to-right and starting a new column
+   whenever the horizontal gap between two consecutive words exceeds `2x` the image's mean
+   recognized word height -- a threshold scaled to the text's own size (so it holds up across
+   image resolutions) rather than a fixed pixel count. Validated against this phase's own fixture
+   image (`engine/tests/fixtures/user_table.png`): real inter-word gaps there are ~10-15px, real
+   column gaps are ~110-290px, and the computed threshold sits at ~50px -- comfortably separating
+   the two. See `engine/src/extractors/image_extractor.cpp`'s `split_into_columns` for the exact
+   logic, and §11 for this heuristic's acknowledged limits.
+3. **The first line becomes the header** -- its (trimmed) cell text becomes each subsequent
+   record's field names, verbatim, exactly like `CsvExtractor`'s header row (§3). No "name"/"email"
+   semantics exist at this layer -- that is §15's job, one step downstream.
+4. **Structural checks only, mirroring `CsvExtractor`**: fewer than 2 lines, or every line
+   splitting into only 1 column, is "no table structure was detected" (`ErrorCode::Validation`) --
+   there is nothing to extract records from. Zero OCR words at all is the more specific "no text
+   was detected in the image". A data row whose column count doesn't match the header's is a
+   per-row `RejectedRecord` (bounded the same way `CsvExtractor`'s are, §3), never silently dropped
+   or force-fit. More than 200 detected data rows (`kMaxRecords`, deliberately smaller than CSV's
+   1000 -- a real business-table screenshot is realistically dozens of rows, and OCR is far more
+   compute-expensive per record than CSV tokenization) rejects the whole image, mirroring
+   `CsvExtractor`'s whole-file row-count bound.
+
+**Confidence and warnings** are generic `domain::ExtractionResult` fields (§2, extended this
+phase) any extractor may optionally populate -- `CsvExtractor` leaves both unset; `ImageExtractor`
+sets `average_confidence` to the mean of every OCR'd word's non-negative confidence score, and adds
+a warning when that average falls below 70% ("extracted data may contain errors; please review
+before confirming") -- surfaced, not hidden (§11).
+
+## 15. User mapping and the Preview API
+
+**`services::map_structured_records_to_users`** (`engine/include/flowforge/services/
+user_mapping.hpp`) is the target-specific adapter step between generic extraction and the Users
+target -- mirrors §5's already-documented mechanical pattern for exactly this purpose. It locates
+each record's name/email/phone columns by a **case-insensitive, trimmed, small-alias-set** match
+(`"Email Address"`, `"email"`, `"e-mail"` all map to email; similarly for name/phone) --
+deliberately looser than `parse_user_import_csv`'s exact-lowercase CSV header match (§ of
+`user-import.md`), because an image's header text was read by OCR, not typed as a machine-oriented
+column name by whoever authored the CSV. A record missing a recognizable name/email column, or one
+whose values fail the exact same `domain::validate_and_normalize_user_record` CSV import and
+`handlers::UserProcessHandler` already enforce, is reported as a rejection -- never silently
+dropped, never silently accepted.
+
+**`POST /api/v1/process/preview`** (multipart, identical fields to `/api/v1/process`: `source`,
+`target`, `file`) runs extraction (§14) and mapping (above) and returns the result --
+**it creates nothing**: no `Workload` row, no `Job` row, no database write of any kind. Verified
+directly (not just asserted): `apps/server/tests/process_routes_test.cpp`'s
+`PreviewOfARealFixtureImageExtractsRecordsAndCreatesNoWorkload` uploads this phase's real fixture
+image, asserts a real extraction result, and then asserts `GET /api/v1/workloads` is still empty.
+`InputProcessingService::preview()` returns `ErrorCode::Validation` immediately for `csv`+any
+target, any target other than `users`, or when no image extractor was wired in at startup (no
+Tesseract found) -- `Image`/`Screenshot`+`Users` is the only combination `preview()` ever accepts.
+
+**Why the reported rejection index is the *original* row position, not extraction's own
+(shorter) index space.** `ImageExtractor::extract()` already filters out structurally-invalid rows
+into its own `rejected_records`, so `extracted->records` (what mapping actually sees) is a
+*shorter* list than the original table, with gaps where structural rejections were. If mapping
+then rejects, say, the 2nd record in that shorter list, reporting "record 2" would be actively
+misleading if row 1 of the *original* table had already been dropped for a structural reason --
+the user's real row 3 would be reported as "2". `InputProcessingService::preview()` reconstructs
+the true original position of each structurally-valid record (by walking `1..total_records` and
+skipping whatever `extracted->rejected_records` already claimed) before merging extraction-level
+and mapping-level rejections into one list, each entry pointing at its real row in the image --
+see `engine/tests/services/input_processing_service_test.cpp`'s
+`PreviewRenumbersMappingRejectionsPastStructuralRejections` for the test proving this holds even
+with a structural rejection ahead of a mapping rejection in the same image.
+
+## 16. Why the Tesseract CLI, not libtesseract -- and the resulting security model
+
+Before adding any OCR dependency, this phase checked: repository/build conventions, supported
+platforms, licensing, maintenance status, and whether the library performs OCR itself or only
+image decoding (per this phase's own brief). **Tesseract** (Apache 2.0, actively maintained, the
+de facto standard open-source OCR engine, genuinely performing OCR rather than just decoding) was
+the clear choice -- the open question was *how* to integrate it.
+
+**This development environment has no MSYS2/pacman and no working `pkg-config`-based C++ library
+discovery for a toolchain-matched Tesseract build**, and a prebuilt Windows Tesseract distribution
+ships MSVC-ABI libraries incompatible with this project's MinGW/Clang toolchain (the same class of
+cross-compiler C++ ABI risk already documented for other native dependencies in this codebase).
+Linking `libtesseract`'s C++ API directly would have meant either an unverified, likely-broken
+Windows build, or a from-source Leptonica+Tesseract compile large and slow enough to risk leaving
+the build in an unverified state within this phase -- exactly the situation this phase's own brief
+says to stop at the provider boundary for.
+
+**Shelling out to the `tesseract` CLI as a subprocess sidesteps all of this entirely**: Tesseract's
+CLI is a stable, documented, platform-independent interface (the same binary distributed via
+`apt-get install tesseract-ocr` on Linux CI and the UB-Mannheim/tesseract-ocr Windows installers)
+that requires zero C++-level linking, so it is immune to compiler/ABI mismatches by construction.
+This was verified, not assumed: this phase actually installed Tesseract (`winget install
+UB-Mannheim.TesseractOCR`) on the development machine and ran the full
+image -> OCR -> table-reconstruction -> mapping -> preview -> confirm -> real-PostgreSQL-persisted
+workload pipeline against a real fixture image before writing this document (see §19).
+
+This choice has a direct, positive security consequence: **`infra::run_subprocess`
+(`engine/include/flowforge/infra/subprocess.hpp`) never invokes a shell.** `executable` and each
+argument are passed directly to the OS's native process-creation API (`CreateProcessA` on Windows,
+`posix_spawnp` on POSIX) as a literal argv -- there is no `/bin/sh -c` or `cmd.exe /c` anywhere in
+this path, so shell metacharacters in any argument have no special meaning and command injection
+is not a category of bug this code can have. `run_subprocess` also enforces a hard timeout
+(`TesseractCliOcrProvider`'s default: 15s), forcibly terminating the child process
+(`TerminateProcess`/`SIGKILL`) if it's exceeded -- bounded processing, never an unbounded hang on a
+pathological image (§12 of the original phase brief).
+
+**Security: image validation** -- covered in full in §13; the summary is that no unvalidated byte
+ever reaches the OCR engine, and the accepted-format allowlist is checked against real file
+signatures, never a caller-supplied claim.
+
+**Security: temporary file handling** -- `TesseractCliOcrProvider::recognize()` writes the input
+image to `<system temp dir>/flowforge_ocr_<random UUIDv4>.<ext>` and instructs Tesseract to write
+its TSV output to a sibling `..._out.tsv`; both filenames are entirely server-generated (a random
+UUID plus a format extension already validated against a fixed allowlist -- §13), never derived
+from caller-supplied content, so there is no path-traversal surface. A local `TempFileGuard` (RAII)
+deletes both files on every return path -- success, a validation failure, an OCR failure, or a
+timeout -- so a burst of failed uploads cannot accumulate temp files. No uploaded image's raw
+bytes, and no OCR-extracted text, is ever written to a log line -- only structural facts (word
+count, average confidence, row/column counts) are logged, mirroring `user-import.md` §7's "never
+log raw uploaded data" policy for CSV.
+
+## 17. Confirmation and why `process()` never accepts `Image`/`Screenshot`
+
+**`POST /api/v1/process/confirm`** (JSON body: `{"target": "users", "records": [{"name", "email",
+"phone"?}, ...]}`) is the only step in this phase's image pipeline that creates anything --
+`InputProcessingService::confirm()` re-validates every record via the same
+`domain::validate_and_normalize_user_record` (**never trusting a client-echoed record as
+already-valid**, even though in the intended flow it is exactly what `/preview` just returned,
+unmodified -- a defensively-designed API must not assume its own prior response was never
+tampered with in transit or by a modified client) and then calls the exact same
+`WorkloadService::create_workload()` every other workload-creating path in this codebase uses.
+`ConfirmRequest`/its response (`ProcessResult`, reused from §4/Phase 3C) are therefore not new
+concepts -- `confirm()` is `process()`'s create-a-workload step, fed by already-extracted records
+instead of a fresh CSV parse.
+
+**Why this is stateless rather than a server-side "preview session".** `/preview`'s response
+already contains everything `/confirm` needs (the normalized, ready-to-submit records) -- there is
+no missing information a server-side session would supply that the client doesn't already have.
+Building one would mean either an in-memory session store (which doesn't survive a server restart
+or work across multiple server instances behind a load balancer) or a persisted one (which is
+exactly the kind of "commit unconfirmed data to a database" this phase's brief explicitly forbids).
+The stateless design -- the client holds the preview result and re-submits it verbatim to confirm
+-- has neither problem, at the cost of a client needing to keep the preview response around between
+the two calls, which every reasonable client (including `<ProcessingUploadPanel>`, §18) does
+trivially via component state.
+
+**`InputProcessingService::process()`'s `is_supported()` check (§4, unchanged by this phase) never
+accepts `Image`/`Screenshot`, even now that a real `ImageExtractor` is wired in for `preview()`.**
+This is deliberate, not an oversight: the product requirement is explicit that extracted image
+records must never be persisted before a human confirms them (this document's opening note), and
+`process()`'s entire contract is "validate then immediately create a workload" -- there is no
+confirmation step in that path for any source. Allowing `image`+`users` through `process()` would
+silently bypass the confirmation requirement the moment a caller used the "wrong" endpoint.
+`engine/tests/services/input_processing_service_test.cpp`'s
+`DirectProcessNeverAcceptsImageEvenWithAnExtractorWired` proves this holds even with a working
+image extractor injected -- the guard is `is_supported()`'s source-type check, not merely "no
+extractor configured".
+
+## 18. Frontend: image upload, extraction preview, and confirmation
+
+`<ProcessingUploadPanel>` (`apps/dashboard/src/components/processing/processing-upload-panel.tsx`)
+gained a second, real flow alongside CSV's unchanged direct upload: selecting `Image` or
+`Screenshot` as the source (both now `available: true`, alongside `Users` as the only available
+target -- `Products`/`Categories` and `Text`/`Url` remain visibly present but disabled, "Coming
+soon", never silently-do-nothing buttons) reveals a drag-and-drop upload area with client-side file
+type/size hints (mirroring the server's own PNG/JPEG/WebP + 6 MiB limits -- client-side is UX sugar
+only; the server independently, authoritatively validates every byte, §13) and a selected-image
+thumbnail preview via an object URL (revoked on replacement/unmount to avoid leaking blobs).
+
+Clicking **Extract Data** calls `apiClient.previewProcess` (`POST /api/v1/process/preview`) and
+shows a non-fake loading state -- a spinner plus static "Analyzing image… / Extracting rows ·
+Validating records" text, never an animated progress percentage, since the underlying request is
+one atomic HTTP call with no granular progress to report honestly. On success, the panel renders
+the extracted-records review table (valid/invalid counts, average OCR confidence, low-confidence
+warnings, a Name/Email/Phone table for valid records, and a separate "Invalid rows" list with each
+row's original position and rejection reason) with **Process Valid Records** and **Cancel**
+buttons -- the panel never auto-submits after extraction; a human must explicitly click through.
+**Process Valid Records** calls `apiClient.confirmProcess` (`POST /api/v1/process/confirm`) with
+exactly the `records` the preview response returned, and on success renders the same
+"Processing started" + `<WorkloadProgressPanel>` view CSV's flow already used (§10) -- the same
+downstream experience regardless of which source produced the workload. An error during either
+call (extraction or confirmation) is shown inline, never silently swallowed; an error during
+confirmation specifically keeps the review table visible so the user can retry or cancel without
+losing the extraction they already reviewed.
+
+`/users`, `<UserImportWizard>`, and CSV's flow through this panel are all unchanged by this phase.
+
+## 19. Testing: real vs. fake OCR
+
+Every test in this phase's suite that asserts something about *text actually being read from an
+image* runs real Tesseract OCR against a real, committed fixture image
+(`engine/tests/fixtures/user_table.png` -- a rendered four-line "Name | Email | Phone" table,
+generated once for this phase) -- never a mock OCR provider standing in for the real engine's
+output, and never a network service. These integration tests (`engine/tests/providers/
+tesseract_ocr_provider_test.cpp`'s `OcrIntegrationTest` suite, plus
+`apps/server/tests/process_routes_test.cpp`'s `PreviewOfARealFixtureImageExtractsRecordsAndCreatesNoWorkload`)
+call `TesseractCliOcrProvider::discover_executable()` in `SetUp()` and `GTEST_SKIP()` -- reported
+honestly by GoogleTest/CTest as "SKIPPED", never silently treated as a pass -- when no usable
+Tesseract binary is found, mirroring `engine/tests/persistence/postgres/
+postgres_test_support.hpp`'s existing pattern for PostgreSQL integration tests exactly. CI installs
+`tesseract-ocr` via `apt-get` in every job that builds/runs the engine or server test binaries
+(`.github/workflows/ci.yml`) specifically so these tests run for real there too, not just locally.
+
+Every other test of this phase's logic -- table reconstruction (`engine/tests/extractors/
+image_extractor_test.cpp`), user mapping (`engine/tests/services/user_mapping_test.cpp`), and the
+preview/confirm service layer (`engine/tests/services/input_processing_service_test.cpp`) -- uses a
+small, deterministic `FakeOcrProvider` test double that returns caller-constructed `OcrWord` lists
+instead of running OCR, so these tests are fast, deterministic, and independent of whether
+Tesseract is installed on the machine running them. This split (real-OCR integration tests, gated
+and skippable; fast deterministic unit tests for everything downstream of OCR) is deliberate: it
+means the *business logic* (table reconstruction, mapping, preview/confirm semantics) is fully
+tested on every machine and in every CI run, while the *real OCR accuracy* claim is verified
+specifically and only where a real Tesseract binary is actually available -- exactly the
+distinction this phase's brief asked for ("do not use external network services inside unit
+tests"; "isolate [external-infrastructure-dependent tests] as an integration test and clearly
+document how it runs").

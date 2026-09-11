@@ -8,6 +8,8 @@ add_library(flowforge_engine STATIC
   src/infra/config.cpp
   src/infra/metrics.cpp
   src/infra/csv.cpp
+  src/infra/subprocess.cpp
+  src/infra/image_format.cpp
   src/domain/job.cpp
   src/domain/workflow.cpp
   src/domain/worker.cpp
@@ -28,12 +30,15 @@ add_library(flowforge_engine STATIC
   src/handlers/user_process_handler.cpp
   src/handlers/builtin_handlers.cpp
   src/extractors/csv_extractor.cpp
+  src/extractors/image_extractor.cpp
+  src/providers/tesseract_ocr_provider.cpp
   src/persistence/in_memory_repositories.cpp
   src/persistence/repository_factory.cpp
   src/services/job_service.cpp
   src/services/workload_service.cpp
   src/services/user_import_parser.cpp
   src/services/user_import.cpp
+  src/services/user_mapping.cpp
   src/services/input_processing_service.cpp
 )
 

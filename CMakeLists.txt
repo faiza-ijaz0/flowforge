@@ -148,6 +148,18 @@ if(FLOWFORGE_BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
   enable_testing()
   include(CTest)
+
+  # Gives test binaries (engine/tests, apps/server/tests) an absolute path
+  # to engine/tests/fixtures/ regardless of ctest's working directory --
+  # see cmake/fixtures_path.hpp.in. Defined once at this level since both
+  # test binaries need it (Phase 3D-1: the real-Tesseract image extraction
+  # integration tests).
+  set(FLOWFORGE_TEST_FIXTURES_DIR "${CMAKE_SOURCE_DIR}/engine/tests/fixtures")
+  set(FLOWFORGE_GENERATED_TEST_SUPPORT_DIR "${CMAKE_BINARY_DIR}/generated")
+  configure_file(
+    ${CMAKE_SOURCE_DIR}/cmake/fixtures_path.hpp.in
+    ${FLOWFORGE_GENERATED_TEST_SUPPORT_DIR}/flowforge/test_support/fixtures_path.hpp
+    @ONLY)
 endif()
 
 if(FLOWFORGE_BUILD_BENCHMARKS)

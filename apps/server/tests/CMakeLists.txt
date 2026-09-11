@@ -13,6 +13,12 @@ target_link_libraries(flowforge_server_tests
     GTest::gtest_main
 )
 
+# See CMakeLists.txt (top-level), "FLOWFORGE_GENERATED_TEST_SUPPORT_DIR" --
+# gives this test binary the same absolute fixtures-directory header
+# engine/tests uses (Phase 3D-1's real-Tesseract preview test needs the
+# committed fixture image regardless of ctest's working directory).
+target_include_directories(flowforge_server_tests PRIVATE ${FLOWFORGE_GENERATED_TEST_SUPPORT_DIR})
+
 flowforge_set_project_warnings(flowforge_server_tests)
 flowforge_enable_sanitizers(flowforge_server_tests)
 

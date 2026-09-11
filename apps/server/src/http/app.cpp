@@ -4,7 +4,9 @@
 #include <tuple>
 
 #include "flowforge/engine/job_executor.hpp"
+#include "flowforge/extractors/image_extractor.hpp"
 #include "flowforge/handlers/builtin_handlers.hpp"
+#include "flowforge/providers/tesseract_ocr_provider.hpp"
 #include "http/cors.hpp"
 #include "http/routes/health_routes.hpp"
 #include "http/routes/job_routes.hpp"
@@ -76,6 +78,24 @@ Result<std::unique_ptr<App>> App::create(infra::AppConfig config) {
     return std::unexpected(started.error());
   }
 
+  // Phase 3D-1: probe for a usable Tesseract OCR binary once, at startup,
+  // rather than on every /process/preview request -- see
+  // `providers::TesseractCliOcrProvider::discover_executable`'s class
+  // comment. A deployment without Tesseract installed gets a clean,
+  // always-"not supported" image/screenshot preview (see
+  // `InputProcessingService::preview`) instead of a crash or a fake
+  // extraction the first time one is attempted -- never a build-time
+  // failure either way.
+  std::shared_ptr<engine::IInputExtractor> image_extractor;
+  if (auto tesseract_path = providers::TesseractCliOcrProvider::discover_executable()) {
+    logger->info("server", "image OCR extraction available",
+                 {{.key = "tesseract_path", .value = *tesseract_path}});
+    image_extractor = std::make_shared<extractors::ImageExtractor>(
+        std::make_shared<providers::TesseractCliOcrProvider>(*tesseract_path));
+  } else {
+    logger->warn("server", "image OCR extraction not available -- no Tesseract binary found", {});
+  }
+
   // Every dependency this process needs (persistence, worker pool,
   // scheduler, retry dispatcher) has now started successfully -- this is
   // the one moment "application readiness" (as opposed to "process
@@ -92,7 +112,7 @@ Result<std::unique_ptr<App>> App::create(infra::AppConfig config) {
   return std::unique_ptr<App>(new App(std::move(config), std::move(logger), std::move(metrics),
                                       std::move(*repositories), std::move(handler_registry),
                                       std::move(worker_pool), std::move(scheduler),
-                                      std::move(retry_dispatcher)));
+                                      std::move(retry_dispatcher), std::move(image_extractor)));
 }
 
 App::App(infra::AppConfig config, std::shared_ptr<infra::Logger> logger,
@@ -100,7 +120,8 @@ App::App(infra::AppConfig config, std::shared_ptr<infra::Logger> logger,
          std::shared_ptr<engine::HandlerRegistry> handler_registry,
          std::shared_ptr<engine::LocalWorkerPool> worker_pool,
          std::shared_ptr<engine::PriorityScheduler> scheduler,
-         std::shared_ptr<engine::RetryDispatcher> retry_dispatcher)
+         std::shared_ptr<engine::RetryDispatcher> retry_dispatcher,
+         std::shared_ptr<engine::IInputExtractor> image_extractor)
     : config_(std::move(config)),
       logger_(std::move(logger)),
       clock_(infra::make_system_clock()),
@@ -123,8 +144,8 @@ App::App(infra::AppConfig config, std::shared_ptr<infra::Logger> logger,
       // docs/architecture/input-processing.md. Never given its own
       // repositories/scheduler; it only ever reaches them through
       // workload_service_/the existing import functions.
-      input_processing_service_(
-          std::make_shared<services::InputProcessingService>(workload_service_, logger_, metrics_)),
+      input_processing_service_(std::make_shared<services::InputProcessingService>(
+          workload_service_, logger_, metrics_, std::move(image_extractor))),
       handler_registry_(std::move(handler_registry)),
       worker_pool_(std::move(worker_pool)),
       scheduler_(std::move(scheduler)),

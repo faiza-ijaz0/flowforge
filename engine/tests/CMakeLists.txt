@@ -14,6 +14,7 @@ add_executable(flowforge_engine_tests
   domain/input_source_test.cpp
   domain/processing_target_test.cpp
   domain/structured_record_test.cpp
+  infra/image_format_test.cpp
   engine/blocking_queue_test.cpp
   engine/thread_pool_test.cpp
   engine/handler_registry_test.cpp
@@ -29,6 +30,8 @@ add_executable(flowforge_engine_tests
   handlers/delay_handler_test.cpp
   handlers/user_process_handler_test.cpp
   extractors/csv_extractor_test.cpp
+  extractors/image_extractor_test.cpp
+  providers/tesseract_ocr_provider_test.cpp
   persistence/in_memory_job_repository_test.cpp
   persistence/in_memory_execution_repository_test.cpp
   persistence/in_memory_workload_repository_test.cpp
@@ -36,6 +39,7 @@ add_executable(flowforge_engine_tests
   services/workload_service_test.cpp
   services/user_import_parser_test.cpp
   services/user_import_test.cpp
+  services/user_mapping_test.cpp
   services/input_processing_service_test.cpp
 )
 
@@ -44,6 +48,11 @@ target_link_libraries(flowforge_engine_tests
     flowforge::engine
     GTest::gtest_main
 )
+
+# See CMakeLists.txt (top-level), "FLOWFORGE_GENERATED_TEST_SUPPORT_DIR" --
+# absolute path to engine/tests/fixtures/ for the real-Tesseract OCR
+# integration tests (providers/tesseract_ocr_provider_test.cpp).
+target_include_directories(flowforge_engine_tests PRIVATE ${FLOWFORGE_GENERATED_TEST_SUPPORT_DIR})
 
 # PostgreSQL integration tests: compiled only when this build has
 # PostgreSQL support (FLOWFORGE_WITH_POSTGRES, decided in the top-level

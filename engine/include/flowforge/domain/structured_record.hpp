@@ -55,12 +55,23 @@ struct RejectedRecord {
 /// shape at a more generic level: `rejected_records` is bounded by the
 /// extractor even though `total_records`/`rejected_record_count` remain
 /// exact -- see each concrete extractor for its own limit.
+///
+/// `warnings` and `average_confidence` (Phase 3D-1) are generic,
+/// extractor-optional metadata -- neither is CSV- or image-specific.
+/// `CsvExtractor` leaves both at their empty/unset defaults;
+/// `extractors::ImageExtractor` is the first extractor to populate either
+/// (e.g. a "no table structure was detected, treated every line as a
+/// single column" warning, and the OCR provider's own mean per-word
+/// confidence) -- see docs/architecture/input-processing.md, "Image
+/// extraction".
 struct ExtractionResult {
   std::size_t total_records = 0;
   std::vector<StructuredRecord> records;
   std::vector<RejectedRecord> rejected_records;
   std::size_t rejected_record_count = 0;
   bool rejected_records_truncated = false;
+  std::vector<std::string> warnings;
+  std::optional<double> average_confidence;
 };
 
 }  // namespace flowforge::domain

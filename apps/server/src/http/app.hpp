@@ -53,7 +53,8 @@ class App {
       std::shared_ptr<engine::HandlerRegistry> handler_registry,
       std::shared_ptr<engine::LocalWorkerPool> worker_pool,
       std::shared_ptr<engine::PriorityScheduler> scheduler,
-      std::shared_ptr<engine::RetryDispatcher> retry_dispatcher);
+      std::shared_ptr<engine::RetryDispatcher> retry_dispatcher,
+      std::shared_ptr<engine::IInputExtractor> image_extractor);
 
   void register_routes();
 

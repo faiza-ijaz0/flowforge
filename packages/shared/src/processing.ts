@@ -36,3 +36,35 @@ export interface ProcessResponse extends Workload {
   rejected_records: RejectedRecord[];
   rejected_records_truncated: boolean;
 }
+
+/**
+ * A normalized, ready-to-confirm user record -- mirrors
+ * flowforge::domain::NormalizedUserRecord. Round-tripped, unmodified,
+ * from a PreviewResponse's `records` into `apiClient.confirmProcess`'s
+ * `records` (Phase 3D-1 -- see docs/architecture/input-processing.md,
+ * "Confirmation").
+ */
+export interface NormalizedUserRecord {
+  name: string;
+  email: string;
+  phone?: string;
+}
+
+/**
+ * Response of POST /api/v1/process/preview -- mirrors
+ * flowforge::services::PreviewResult (Phase 3D-1). No workload/items
+ * fields: nothing is created by a preview call -- see
+ * docs/architecture/input-processing.md, "Preview".
+ */
+export interface PreviewResponse {
+  source: InputSourceType;
+  target: ProcessingTarget;
+  total_records: number;
+  valid_records: number;
+  invalid_records: number;
+  records: NormalizedUserRecord[];
+  rejected_records: RejectedRecord[];
+  rejected_records_truncated: boolean;
+  warnings: string[];
+  average_confidence: number | null;
+}

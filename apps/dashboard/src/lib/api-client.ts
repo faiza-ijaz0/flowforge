@@ -12,6 +12,8 @@ import type {
   ListWorkflowsResponse,
   ListWorkloadItemsResponse,
   ListWorkloadsResponse,
+  NormalizedUserRecord,
+  PreviewResponse,
   ProcessingTarget,
   ProcessResponse,
   UserImportResponse,
@@ -131,4 +133,21 @@ export const apiClient = {
     formData.append("file", file, file.name);
     return requestForm<ProcessResponse>("/api/v1/process", formData);
   },
+
+  // Phase 3D-1: image/screenshot extraction preview + confirmation (see
+  // docs/architecture/input-processing.md, "Preview" / "Confirmation").
+  // previewProcess creates nothing server-side -- no workload, no job;
+  // confirmProcess is the only one of the two that does.
+  previewProcess: (source: InputSourceType, target: ProcessingTarget, file: File) => {
+    const formData = new FormData();
+    formData.append("source", source);
+    formData.append("target", target);
+    formData.append("file", file, file.name);
+    return requestForm<PreviewResponse>("/api/v1/process/preview", formData);
+  },
+  confirmProcess: (target: ProcessingTarget, records: NormalizedUserRecord[]) =>
+    request<ProcessResponse>("/api/v1/process/confirm", {
+      method: "POST",
+      body: JSON.stringify({ target, records }),
+    }),
 };

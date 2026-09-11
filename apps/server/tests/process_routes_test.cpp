@@ -3,10 +3,14 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <thread>
 
 #include "flowforge/infra/config.hpp"
+#include "flowforge/providers/tesseract_ocr_provider.hpp"
+#include "flowforge/test_support/fixtures_path.hpp"
 #include "http/app.hpp"
 
 namespace flowforge::server {
@@ -55,6 +59,25 @@ class ProcessRoutesTest : public ::testing::Test {
          .filename = "input.csv",
          .content_type = "text/csv"},
     };
+  }
+
+  static httplib::MultipartFormDataItems image_request(const std::string& source, const std::string& target,
+                                                       std::string file_content) {
+    return {
+        {.name = "source", .content = source, .filename = "", .content_type = ""},
+        {.name = "target", .content = target, .filename = "", .content_type = ""},
+        {.name = "file",
+         .content = std::move(file_content),
+         .filename = "input.png",
+         .content_type = "image/png"},
+    };
+  }
+
+  [[nodiscard]] static std::string read_fixture(const std::string& filename) {
+    std::ifstream in(std::string(flowforge::test::kFixturesDir) + "/" + filename, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
   }
 
   std::unique_ptr<App> app_;
@@ -137,6 +160,128 @@ TEST_F(ProcessRoutesTest, MissingFileFieldIsRejected) {
 TEST_F(ProcessRoutesTest, NonMultipartRequestIsRejected) {
   auto client = make_client();
   auto res = client.Post("/api/v1/process", "not multipart", "text/plain");
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 400);
+}
+
+// --- Phase 3D-1: preview/confirm --------------------------------------
+
+TEST_F(ProcessRoutesTest, PreviewRejectsCsvSourceEvenThoughProcessSupportsIt) {
+  auto client = make_client();
+  auto res = client.Post("/api/v1/process/preview",
+                         process_request("csv", "users", "name,email\nAlice,alice@example.com\n"));
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 400);
+}
+
+TEST_F(ProcessRoutesTest, PreviewRejectsNonUsersTargets) {
+  auto client = make_client();
+  auto res = client.Post("/api/v1/process/preview", image_request("image", "products", "irrelevant"));
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 400);
+}
+
+TEST_F(ProcessRoutesTest, PreviewRejectsMalformedImageBytes) {
+  auto client = make_client();
+  auto res = client.Post("/api/v1/process/preview", image_request("image", "users", "not a real image"));
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 400);
+}
+
+TEST_F(ProcessRoutesTest, PreviewFailurePathCreatesNoWorkload) {
+  // A rejected preview call must never create a workload -- covers this
+  // without depending on Tesseract being installed (see the gated
+  // real-OCR test below for the success-path equivalent).
+  auto client = make_client();
+  auto before = client.Get("/api/v1/workloads?limit=100");
+  ASSERT_TRUE(before);
+  const auto before_count = nlohmann::json::parse(before->body)["workloads"].size();
+
+  client.Post("/api/v1/process/preview", image_request("image", "users", "not a real image"));
+
+  auto after = client.Get("/api/v1/workloads?limit=100");
+  ASSERT_TRUE(after);
+  EXPECT_EQ(nlohmann::json::parse(after->body)["workloads"].size(), before_count);
+}
+
+TEST_F(ProcessRoutesTest, PreviewOfARealFixtureImageExtractsRecordsAndCreatesNoWorkload) {
+  if (!providers::TesseractCliOcrProvider::discover_executable()) {
+    GTEST_SKIP() << "No usable Tesseract OCR binary found -- skipping real-OCR HTTP test. See "
+                    "docs/architecture/input-processing.md, \"Image extraction\".";
+  }
+  auto client = make_client();
+  const std::string image_bytes = read_fixture("user_table.png");
+  ASSERT_FALSE(image_bytes.empty());
+
+  auto res = client.Post("/api/v1/process/preview", image_request("image", "users", image_bytes));
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 200);
+  auto parsed = nlohmann::json::parse(res->body);
+  EXPECT_EQ(parsed["total_records"], 3);
+  ASSERT_TRUE(parsed.contains("records"));
+  EXPECT_EQ(parsed["records"].size(), 3u);
+  EXPECT_EQ(parsed["records"][0]["email"], "ali@example.com");
+
+  auto workloads = client.Get("/api/v1/workloads?limit=100");
+  ASSERT_TRUE(workloads);
+  EXPECT_TRUE(nlohmann::json::parse(workloads->body)["workloads"].empty());
+}
+
+TEST_F(ProcessRoutesTest, ConfirmCreatesARealWorkloadFromSubmittedRecords) {
+  auto client = make_client();
+  nlohmann::json body{
+      {"target", "users"},
+      {"records",
+       nlohmann::json::array({{{"name", "Ali"}, {"email", "ali@example.com"}},
+                              {{"name", "Sara"}, {"email", "sara@example.com"}, {"phone", "0311"}}})}};
+  auto res = client.Post("/api/v1/process/confirm", body.dump(), "application/json");
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 201);
+  auto parsed = nlohmann::json::parse(res->body);
+  EXPECT_EQ(parsed["type"], "user.process");
+  EXPECT_EQ(parsed["total_records"], 2);
+  EXPECT_EQ(parsed["valid_records"], 2);
+  EXPECT_EQ(parsed["total_items"], 2);
+
+  auto workloads = client.Get("/api/v1/workloads?limit=100");
+  ASSERT_TRUE(workloads);
+  EXPECT_EQ(nlohmann::json::parse(workloads->body)["workloads"].size(), 1u);
+}
+
+TEST_F(ProcessRoutesTest, ConfirmReportsInvalidRecordsRatherThanSilentlyDroppingThem) {
+  auto client = make_client();
+  nlohmann::json body{{"target", "users"},
+                      {"records", nlohmann::json::array({{{"name", "Ali"}, {"email", "ali@example.com"}},
+                                                         {{"name", "Bad"}, {"email", "not-an-email"}}})}};
+  auto res = client.Post("/api/v1/process/confirm", body.dump(), "application/json");
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 201);
+  auto parsed = nlohmann::json::parse(res->body);
+  EXPECT_EQ(parsed["valid_records"], 1);
+  EXPECT_EQ(parsed["invalid_records"], 1);
+  ASSERT_EQ(parsed["rejected_records"].size(), 1u);
+}
+
+TEST_F(ProcessRoutesTest, ConfirmRejectsEmptyRecordsArray) {
+  auto client = make_client();
+  nlohmann::json body{{"target", "users"}, {"records", nlohmann::json::array()}};
+  auto res = client.Post("/api/v1/process/confirm", body.dump(), "application/json");
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 400);
+}
+
+TEST_F(ProcessRoutesTest, ConfirmRejectsMalformedJsonBody) {
+  auto client = make_client();
+  auto res = client.Post("/api/v1/process/confirm", "not json", "application/json");
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 400);
+}
+
+TEST_F(ProcessRoutesTest, ConfirmRejectsNonUsersTarget) {
+  auto client = make_client();
+  nlohmann::json body{{"target", "products"},
+                      {"records", nlohmann::json::array({{{"name", "Ali"}, {"email", "ali@example.com"}}})}};
+  auto res = client.Post("/api/v1/process/confirm", body.dump(), "application/json");
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, 400);
 }

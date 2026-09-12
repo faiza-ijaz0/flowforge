@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 
+#include "flowforge/infra/json_lite.hpp"
+
 namespace flowforge::domain {
 
 namespace {
@@ -46,20 +48,6 @@ bool looks_like_email(std::string_view email) {
   return dot_pos != std::string_view::npos && dot_pos != 0 && dot_pos != domain.size() - 1;
 }
 
-/// Escapes '"' and '\\' so a normalized field can be safely embedded back
-/// into a hand-built JSON string.
-std::string json_escape(std::string_view value) {
-  std::string out;
-  out.reserve(value.size());
-  for (const char c : value) {
-    if (c == '"' || c == '\\') {
-      out.push_back('\\');
-    }
-    out.push_back(c);
-  }
-  return out;
-}
-
 }  // namespace
 
 Result<NormalizedUserRecord> validate_and_normalize_user_record(std::string_view name, std::string_view email,
@@ -96,10 +84,10 @@ Result<NormalizedUserRecord> validate_and_normalize_user_record(std::string_view
 }
 
 std::string serialize_user_record_as_job_payload(const NormalizedUserRecord& record) {
-  std::string payload =
-      R"({"name":")" + json_escape(record.name) + R"(","email":")" + json_escape(record.email) + R"(")";
+  std::string payload = R"({"name":")" + infra::json_escape(record.name) + R"(","email":")" +
+                        infra::json_escape(record.email) + R"(")";
   if (record.phone) {
-    payload += R"(,"phone":")" + json_escape(*record.phone) + R"(")";
+    payload += R"(,"phone":")" + infra::json_escape(*record.phone) + R"(")";
   }
   payload += "}";
   return payload;

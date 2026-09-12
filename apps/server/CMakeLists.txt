@@ -8,6 +8,7 @@ add_library(flowforge_server_lib STATIC
   src/json/job_json.cpp
   src/json/workload_json.cpp
   src/json/process_json.cpp
+  src/json/product_json.cpp
   src/http/error_response.cpp
   src/http/cors.cpp
   src/http/app.cpp
@@ -17,6 +18,7 @@ add_library(flowforge_server_lib STATIC
   src/http/routes/worker_routes.cpp
   src/http/routes/workload_routes.cpp
   src/http/routes/process_routes.cpp
+  src/http/routes/product_routes.cpp
 )
 
 target_include_directories(flowforge_server_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

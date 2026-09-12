@@ -107,5 +107,32 @@ TEST_F(OcrIntegrationTest, ReconstructsAllHundredRowsFromTheBulkFixtureWithoutLo
   EXPECT_GT(*result->average_confidence, 0.0);
 }
 
+/// Phase 3E: real OCR + real table reconstruction against a 100-data-row
+/// **product** table fixture (`products_bulk_100.png` -- see
+/// docs/architecture/product-processing.md, "100+ product fixture").
+/// `ImageExtractor` itself has no product-specific knowledge (see its own
+/// class comment) -- this proves the exact same generic extraction path
+/// the Users fixture exercises above handles a completely different
+/// column set (SKU/Name/Price) equally well, without any change to
+/// `ImageExtractor`.
+TEST_F(OcrIntegrationTest, ReconstructsAllHundredRowsFromTheBulkProductFixtureWithoutLosingAny) {
+  auto provider = std::make_shared<TesseractCliOcrProvider>(tesseract_path_);
+  extractors::ImageExtractor extractor(provider);
+  const std::string image_bytes = read_file(fixture_path("products_bulk_100.png"));
+  ASSERT_FALSE(image_bytes.empty()) << "bulk product fixture image failed to load";
+
+  auto result = extractor.extract({.source_type = domain::InputSourceType::Image, .content = image_bytes});
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+
+  EXPECT_EQ(result->total_records, 100u);
+  EXPECT_EQ(result->records.size() + result->rejected_record_count, 100u);
+  EXPECT_GE(result->records.size(), 90u);
+  for (const auto& record : result->records) {
+    EXPECT_TRUE(record.field("SKU").has_value());
+    EXPECT_TRUE(record.field("Name").has_value());
+    EXPECT_TRUE(record.field("Price").has_value());
+  }
+}
+
 }  // namespace
 }  // namespace flowforge::providers::test

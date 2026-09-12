@@ -19,6 +19,17 @@ std::string png_signature_bytes() {
   return std::string("\x89PNG\r\n\x1a\n") + "fake-pixel-data";
 }
 
+domain::StructuredRecord user_record(std::string name, std::string email,
+                                     std::optional<std::string> phone = std::nullopt) {
+  domain::StructuredRecord record;
+  record.fields.emplace("name", std::move(name));
+  record.fields.emplace("email", std::move(email));
+  if (phone) {
+    record.fields.emplace("phone", std::move(*phone));
+  }
+  return record;
+}
+
 engine::OcrWord word(std::string text, int left, int top, int width, int height, double conf, int block,
                      int par, int line) {
   return engine::OcrWord{.text = std::move(text),
@@ -203,10 +214,13 @@ TEST_F(InputProcessingServiceTest, PreviewRejectsCsvSourceEvenThoughProcessSuppo
   ASSERT_FALSE(result.has_value());
 }
 
-TEST_F(InputProcessingServiceTest, PreviewRejectsNonUsersTargets) {
+TEST_F(InputProcessingServiceTest, PreviewRejectsUnimplementedTargets) {
+  // Products (unlike here) IS supported for image preview as of Phase
+  // 3E -- see the Products-specific tests below. Categories has no
+  // mapping/handler yet, so it remains the genuinely unsupported case.
   enable_image_extractor({word("Name", 20, 20, 40, 20, 96.0, 1, 1, 1)});
   ProcessRequest request{.source_type = domain::InputSourceType::Image,
-                         .target = domain::ProcessingTarget::Products,
+                         .target = domain::ProcessingTarget::Categories,
                          .payload = png_signature_bytes()};
   auto result = service->preview(request);
   ASSERT_FALSE(result.has_value());
@@ -226,8 +240,8 @@ TEST_F(InputProcessingServiceTest, PreviewExtractsAndMapsRecordsWithoutCreatingA
   ASSERT_TRUE(result.has_value()) << result.error().message();
   EXPECT_EQ(result->total_records, 2u);
   ASSERT_EQ(result->records.size(), 2u);
-  EXPECT_EQ(result->records[0].name, "Ali");
-  EXPECT_EQ(result->records[0].email, "ali@example.com");
+  EXPECT_EQ(result->records[0].field("name"), "Ali");
+  EXPECT_EQ(result->records[0].field("email"), "ali@example.com");
   EXPECT_TRUE(result->rejected_records.empty());
 
   auto listed = workload_service->list_workloads(10, 0);
@@ -290,9 +304,9 @@ TEST_F(InputProcessingServiceTest, PreviewRenumbersMappingRejectionsPastStructur
 }
 
 TEST_F(InputProcessingServiceTest, ConfirmCreatesAWorkloadFromPreviouslyPreviewedRecords) {
-  ConfirmRequest request{.target = domain::ProcessingTarget::Users,
-                         .records = {{.name = "Ali", .email = "ali@example.com", .phone = std::nullopt},
-                                     {.name = "Sara", .email = "sara@example.com", .phone = "0311"}}};
+  ConfirmRequest request{
+      .target = domain::ProcessingTarget::Users,
+      .records = {user_record("Ali", "ali@example.com"), user_record("Sara", "sara@example.com", "0311")}};
   auto result = service->confirm(request);
   ASSERT_TRUE(result.has_value()) << result.error().message();
   EXPECT_EQ(result->total_records, 2u);
@@ -307,9 +321,9 @@ TEST_F(InputProcessingServiceTest, ConfirmCreatesAWorkloadFromPreviouslyPreviewe
 }
 
 TEST_F(InputProcessingServiceTest, ConfirmRevalidatesRecordsRatherThanTrustingThemBlindly) {
-  ConfirmRequest request{.target = domain::ProcessingTarget::Users,
-                         .records = {{.name = "Ali", .email = "ali@example.com", .phone = std::nullopt},
-                                     {.name = "Bad", .email = "not-an-email", .phone = std::nullopt}}};
+  ConfirmRequest request{
+      .target = domain::ProcessingTarget::Users,
+      .records = {user_record("Ali", "ali@example.com"), user_record("Bad", "not-an-email")}};
   auto result = service->confirm(request);
   ASSERT_TRUE(result.has_value()) << result.error().message();
   EXPECT_EQ(result->total_records, 2u);
@@ -320,9 +334,14 @@ TEST_F(InputProcessingServiceTest, ConfirmRevalidatesRecordsRatherThanTrustingTh
   EXPECT_EQ(result->workload.total_items(), 1u);
 }
 
-TEST_F(InputProcessingServiceTest, ConfirmRejectsNonUsersTarget) {
-  ConfirmRequest request{.target = domain::ProcessingTarget::Products,
-                         .records = {{.name = "Ali", .email = "ali@example.com", .phone = std::nullopt}}};
+TEST_F(InputProcessingServiceTest, ConfirmRejectsUnimplementedTarget) {
+  // Categories has no product/user-style mapping/handler yet -- see
+  // docs/architecture/product-processing.md, "Deferred to a future
+  // phase". Users and Products are both now supported by confirm() (see
+  // the Products-specific tests below), so this test exercises the one
+  // remaining, genuinely unsupported target.
+  ConfirmRequest request{.target = domain::ProcessingTarget::Categories,
+                         .records = {user_record("Ali", "ali@example.com")}};
   auto result = service->confirm(request);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::Validation);

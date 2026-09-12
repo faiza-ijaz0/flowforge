@@ -1,7 +1,11 @@
 #include "flowforge/services/input_processing_service.hpp"
 
+#include <cstdio>
 #include <unordered_set>
 
+#include "flowforge/domain/product_record.hpp"
+#include "flowforge/domain/user_record.hpp"
+#include "flowforge/services/product_mapping.hpp"
 #include "flowforge/services/user_import.hpp"
 #include "flowforge/services/user_mapping.hpp"
 
@@ -18,11 +22,11 @@ constexpr std::size_t kMaxConfirmRecords = 1000;
 
 /// The one implemented `(InputSourceType, ProcessingTarget)` combination
 /// for `process()`. See docs/architecture/input-processing.md, "What's
-/// implemented vs. foundation-only" -- extending this is how a future
-/// phase adds e.g. CSV+Products, never by loosening `WorkloadService`
-/// itself. Deliberately excludes `Image`/`Screenshot` even once an
-/// extractor exists for them -- see `InputProcessingService::process`'s
-/// class comment and `preview()` below.
+/// implemented vs. foundation-only" -- CSV+Products deliberately does
+/// NOT appear here even though it's implemented, because it goes through
+/// preview()/confirm() only -- see docs/architecture/
+/// product-processing.md, "Why CSV+Products has no direct process()
+/// path".
 [[nodiscard]] bool is_supported(domain::InputSourceType source, domain::ProcessingTarget target) noexcept {
   return source == domain::InputSourceType::Csv && target == domain::ProcessingTarget::Users;
 }
@@ -47,6 +51,125 @@ ProcessResult from_user_import_result(UserImportResult result) {
                        .invalid_records = result.invalid_rows,
                        .rejected_records = std::move(rejected_records),
                        .rejected_records_truncated = result.rejected_rows_truncated};
+}
+
+// --- Generic <-> per-target record conversion --------------------------
+//
+// This is the ONLY place InputProcessingService knows "Users" and
+// "Products" are different targets -- see the header's class comment.
+// Each function here is a thin adapter over that target's own free
+// functions (domain::validate_and_normalize_*_record,
+// services::map_structured_records_to_*); none of them reimplement a
+// validation rule.
+
+domain::StructuredRecord user_record_to_structured(const domain::NormalizedUserRecord& record) {
+  domain::StructuredRecord structured;
+  structured.fields.emplace("name", record.name);
+  structured.fields.emplace("email", record.email);
+  if (record.phone) {
+    structured.fields.emplace("phone", *record.phone);
+  }
+  return structured;
+}
+
+std::string format_price(double price) {
+  char buffer[64];
+  std::snprintf(buffer, sizeof(buffer), "%.2f", price);
+  return buffer;
+}
+
+domain::StructuredRecord product_record_to_structured(const domain::NormalizedProductRecord& record) {
+  domain::StructuredRecord structured;
+  structured.fields.emplace("sku", record.sku);
+  structured.fields.emplace("name", record.name);
+  structured.fields.emplace("price", format_price(record.price));
+  structured.fields.emplace("currency", record.currency);
+  if (record.category) {
+    structured.fields.emplace("category", *record.category);
+  }
+  if (record.description) {
+    structured.fields.emplace("description", *record.description);
+  }
+  structured.fields.emplace("stock_quantity", std::to_string(record.stock_quantity));
+  return structured;
+}
+
+/// The generic shape `map_structured_records_to_users`/
+/// `map_structured_records_to_products` both reduce to once their
+/// target-specific `NormalizedXRecord` is converted to a
+/// `StructuredRecord` -- see the two functions above.
+struct GenericMappedRecords {
+  std::vector<domain::StructuredRecord> valid_records;
+  std::vector<domain::RejectedRecord> rejected_records;
+  bool rejected_records_truncated = false;
+};
+
+[[nodiscard]] Result<GenericMappedRecords> map_for_target(
+    domain::ProcessingTarget target, const std::vector<domain::StructuredRecord>& records) {
+  GenericMappedRecords result;
+  if (target == domain::ProcessingTarget::Users) {
+    auto mapped = map_structured_records_to_users(records);
+    result.valid_records.reserve(mapped.valid_records.size());
+    for (auto& record : mapped.valid_records) {
+      result.valid_records.push_back(user_record_to_structured(record));
+    }
+    for (auto& rejection : mapped.rejected_records) {
+      result.rejected_records.push_back({.index = rejection.index, .reason = std::move(rejection.reason)});
+    }
+    result.rejected_records_truncated = mapped.rejected_records_truncated;
+    return result;
+  }
+  if (target == domain::ProcessingTarget::Products) {
+    auto mapped = map_structured_records_to_products(records);
+    result.valid_records.reserve(mapped.valid_records.size());
+    for (auto& record : mapped.valid_records) {
+      result.valid_records.push_back(product_record_to_structured(record));
+    }
+    for (auto& rejection : mapped.rejected_records) {
+      result.rejected_records.push_back({.index = rejection.index, .reason = std::move(rejection.reason)});
+    }
+    result.rejected_records_truncated = mapped.rejected_records_truncated;
+    return result;
+  }
+  return std::unexpected(make_error(
+      ErrorCode::Validation, "target '" + std::string(domain::to_string(target)) + "' is not supported"));
+}
+
+/// Re-validates one already-normalized generic record against `target`'s
+/// own rules and serializes it as that target's job payload -- confirm()'s
+/// per-record step. Never trusts `record` as already-valid (see
+/// `ConfirmRequest`'s class comment).
+[[nodiscard]] Result<std::string> validate_record_for_target(domain::ProcessingTarget target,
+                                                             const domain::StructuredRecord& record) {
+  if (target == domain::ProcessingTarget::Users) {
+    const auto name = record.field("name");
+    const auto email = record.field("email");
+    if (!name || !email) {
+      return std::unexpected(make_error(ErrorCode::Validation, "'name' and 'email' are required"));
+    }
+    auto normalized = domain::validate_and_normalize_user_record(*name, *email, record.field("phone"));
+    if (!normalized) {
+      return std::unexpected(normalized.error());
+    }
+    return domain::serialize_user_record_as_job_payload(*normalized);
+  }
+  if (target == domain::ProcessingTarget::Products) {
+    const auto sku = record.field("sku");
+    const auto name = record.field("name");
+    const auto price = record.field("price");
+    if (!sku || !name || !price) {
+      return std::unexpected(make_error(ErrorCode::Validation, "'sku', 'name', and 'price' are required"));
+    }
+    auto normalized = domain::validate_and_normalize_product_record(
+        *sku, *name, *price, record.field("currency"), record.field("category"), record.field("description"),
+        record.field("stock_quantity"));
+    if (!normalized) {
+      return std::unexpected(normalized.error());
+    }
+    return domain::serialize_product_record_as_job_payload(*normalized);
+  }
+  return std::unexpected(make_error(
+      ErrorCode::Validation, "target '" + std::string(domain::to_string(target)) + "' is not supported"));
 }
 
 }  // namespace
@@ -80,8 +203,19 @@ Result<ProcessResult> InputProcessingService::process(const ProcessRequest& requ
 }
 
 Result<PreviewResult> InputProcessingService::preview(const ProcessRequest& request) {
-  if (request.target != domain::ProcessingTarget::Users || !is_image_source(request.source_type) ||
-      !image_extractor_) {
+  const engine::IInputExtractor* extractor = nullptr;
+  if (request.target == domain::ProcessingTarget::Users) {
+    if (is_image_source(request.source_type) && image_extractor_) {
+      extractor = image_extractor_.get();
+    }
+  } else if (request.target == domain::ProcessingTarget::Products) {
+    if (request.source_type == domain::InputSourceType::Csv) {
+      extractor = &csv_extractor_;
+    } else if (is_image_source(request.source_type) && image_extractor_) {
+      extractor = image_extractor_.get();
+    }
+  }
+  if (!extractor) {
     logger_->warn("input_processing_service", "preview rejected: unsupported combination",
                   {{.key = "source", .value = std::string(domain::to_string(request.source_type))},
                    {.key = "target", .value = std::string(domain::to_string(request.target))}});
@@ -92,18 +226,21 @@ Result<PreviewResult> InputProcessingService::preview(const ProcessRequest& requ
   }
 
   const domain::InputPayload payload{.source_type = request.source_type, .content = request.payload};
-  auto extracted = image_extractor_->extract(payload);
+  auto extracted = extractor->extract(payload);
   if (!extracted) {
     logger_->warn("input_processing_service", "preview extraction failed",
                   {{.key = "reason", .value = extracted.error().message()}});
     return std::unexpected(extracted.error());
   }
 
-  auto mapped = map_structured_records_to_users(extracted->records);
+  auto mapped = map_for_target(request.target, extracted->records);
+  if (!mapped) {
+    return std::unexpected(mapped.error());
+  }
 
   // extracted->records only contains rows extraction itself found
   // structurally valid -- to report every rejection (structural and
-  // mapping-level) against its real position in the original image, not
+  // mapping-level) against its real position in the original input, not
   // extracted->records' own (shorter, renumbered) index space,
   // reconstruct which original row each extracted->records[k] came from:
   // it's the k-th smallest original index that ISN'T already one of
@@ -125,14 +262,14 @@ Result<PreviewResult> InputProcessingService::preview(const ProcessRequest& requ
   result.source_type = request.source_type;
   result.target = request.target;
   result.total_records = extracted->total_records;
-  result.records = std::move(mapped.valid_records);
+  result.records = std::move(mapped->valid_records);
   result.warnings = extracted->warnings;
   result.average_confidence = extracted->average_confidence;
 
   result.rejected_records = extracted->rejected_records;
   result.rejected_records_truncated =
-      extracted->rejected_records_truncated || mapped.rejected_records_truncated;
-  for (const auto& rejection : mapped.rejected_records) {
+      extracted->rejected_records_truncated || mapped->rejected_records_truncated;
+  for (const auto& rejection : mapped->rejected_records) {
     // rejection.index is 1-based within extracted->records.
     const std::size_t original_index = (rejection.index >= 1 && rejection.index <= original_index_of.size())
                                            ? original_index_of[rejection.index - 1]
@@ -144,7 +281,8 @@ Result<PreviewResult> InputProcessingService::preview(const ProcessRequest& requ
     metrics_->increment_counter("flowforge_process_previews_total");
   }
   logger_->info("input_processing_service", "preview computed",
-                {{.key = "total_records", .value = std::to_string(result.total_records)},
+                {{.key = "target", .value = std::string(domain::to_string(request.target))},
+                 {.key = "total_records", .value = std::to_string(result.total_records)},
                  {.key = "valid_records", .value = std::to_string(result.records.size())},
                  {.key = "rejected_records", .value = std::to_string(result.rejected_records.size())}});
 
@@ -152,7 +290,8 @@ Result<PreviewResult> InputProcessingService::preview(const ProcessRequest& requ
 }
 
 Result<ProcessResult> InputProcessingService::confirm(const ConfirmRequest& request) {
-  if (request.target != domain::ProcessingTarget::Users) {
+  if (request.target != domain::ProcessingTarget::Users &&
+      request.target != domain::ProcessingTarget::Products) {
     return std::unexpected(
         make_error(ErrorCode::Validation,
                    "target '" + std::string(domain::to_string(request.target)) + "' is not supported"));
@@ -166,23 +305,20 @@ Result<ProcessResult> InputProcessingService::confirm(const ConfirmRequest& requ
   }
 
   CreateWorkloadRequest create_request;
-  create_request.type = std::string(domain::job_type_for_processing_target(domain::ProcessingTarget::Users));
+  create_request.type = std::string(domain::job_type_for_processing_target(request.target));
   create_request.items.reserve(request.records.size());
 
   std::vector<domain::RejectedRecord> rejected_records;
   for (std::size_t i = 0; i < request.records.size(); ++i) {
-    const auto& record = request.records[i];
     // Never trusted as already-valid -- see ConfirmRequest's class
-    // comment: re-run the exact same validation CSV import and
-    // preview() itself already ran.
-    auto normalized = domain::validate_and_normalize_user_record(
-        record.name, record.email,
-        record.phone ? std::optional<std::string_view>(*record.phone) : std::nullopt);
-    if (!normalized) {
-      rejected_records.push_back({.index = i + 1, .reason = normalized.error().message()});
+    // comment: re-run the exact same validation preview() itself
+    // already ran (and, for Users, the CSV import path also runs).
+    auto payload = validate_record_for_target(request.target, request.records[i]);
+    if (!payload) {
+      rejected_records.push_back({.index = i + 1, .reason = payload.error().message()});
       continue;
     }
-    create_request.items.push_back({.payload = domain::serialize_user_record_as_job_payload(*normalized)});
+    create_request.items.push_back({.payload = std::move(*payload)});
   }
 
   auto created = workload_service_->create_workload(create_request);
@@ -194,7 +330,8 @@ Result<ProcessResult> InputProcessingService::confirm(const ConfirmRequest& requ
     metrics_->increment_counter("flowforge_process_confirms_total");
   }
   logger_->info("input_processing_service", "confirm submitted",
-                {{.key = "workload_id", .value = created->workload.id().value()},
+                {{.key = "target", .value = std::string(domain::to_string(request.target))},
+                 {.key = "workload_id", .value = created->workload.id().value()},
                  {.key = "total_records", .value = std::to_string(request.records.size())},
                  {.key = "valid_records", .value = std::to_string(create_request.items.size())},
                  {.key = "rejected_records", .value = std::to_string(rejected_records.size())}});

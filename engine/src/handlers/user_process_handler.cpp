@@ -4,6 +4,7 @@
 #include <optional>
 
 #include "flowforge/domain/user_record.hpp"
+#include "flowforge/infra/json_lite.hpp"
 
 namespace flowforge::handlers {
 
@@ -11,71 +12,8 @@ namespace {
 
 constexpr std::size_t kMaxPayloadBytes = std::size_t{16} * 1024;
 
-/// Extracts the string value of `"key": "..."` from a flat JSON object
-/// `payload`. Supports only `\"` and `\\` escapes (see the header's class
-/// comment) -- returns std::nullopt if `key` is not present, is not
-/// followed by a JSON string value, or the string is unterminated.
-/// Deliberately not a general-purpose JSON parser -- see
-/// UserProcessHandler's class comment for the rationale (no JSON library
-/// in engine/).
-std::optional<std::string> extract_json_string_field(std::string_view payload, std::string_view key) {
-  const std::string needle = "\"" + std::string(key) + "\"";
-  const auto key_pos = payload.find(needle);
-  if (key_pos == std::string_view::npos) {
-    return std::nullopt;
-  }
-  std::size_t pos = key_pos + needle.size();
-  while (pos < payload.size() && (payload[pos] == ' ' || payload[pos] == '\t')) {
-    ++pos;
-  }
-  if (pos >= payload.size() || payload[pos] != ':') {
-    return std::nullopt;
-  }
-  ++pos;
-  while (pos < payload.size() && (payload[pos] == ' ' || payload[pos] == '\t')) {
-    ++pos;
-  }
-  if (pos >= payload.size() || payload[pos] != '"') {
-    return std::nullopt;
-  }
-  ++pos;
-
-  std::string value;
-  while (pos < payload.size() && payload[pos] != '"') {
-    if (payload[pos] == '\\') {
-      if (pos + 1 >= payload.size()) {
-        return std::nullopt;
-      }
-      const char escaped = payload[pos + 1];
-      if (escaped != '"' && escaped != '\\') {
-        return std::nullopt;  // Unsupported escape -- see class comment.
-      }
-      value.push_back(escaped);
-      pos += 2;
-      continue;
-    }
-    value.push_back(payload[pos]);
-    ++pos;
-  }
-  if (pos >= payload.size()) {
-    return std::nullopt;  // Unterminated string.
-  }
-  return value;
-}
-
-/// Escapes '"' and '\\' so a normalized field can be safely embedded back
-/// into the small hand-built JSON output object below.
-std::string json_escape(std::string_view value) {
-  std::string out;
-  out.reserve(value.size());
-  for (const char c : value) {
-    if (c == '"' || c == '\\') {
-      out.push_back('\\');
-    }
-    out.push_back(c);
-  }
-  return out;
-}
+using infra::extract_json_string_field;
+using infra::json_escape;
 
 }  // namespace
 

@@ -12,7 +12,7 @@ type Stage = "idle" | "extracting" | "preview-ready" | "confirming" | "submittin
 
 const TARGETS: { value: ProcessingTarget; label: string; available: boolean }[] = [
   { value: "users", label: "Users", available: true },
-  { value: "products", label: "Products", available: false },
+  { value: "products", label: "Products", available: true },
   { value: "categories", label: "Categories", available: false },
 ];
 
@@ -23,6 +23,34 @@ const SOURCES: { value: InputSourceType; label: string; available: boolean }[] =
   { value: "text", label: "Text", available: false },
   { value: "url", label: "URL", available: false },
 ];
+
+/// Column definitions for the extraction-preview table, keyed by target
+/// (Phase 3E -- see docs/architecture/product-processing.md). `preview`
+/// records are a generic field-name -> string map
+/// (`@flowforge/shared`'s `StructuredRecord`); this is the one place the
+/// dashboard knows which fields each target's records carry.
+const PREVIEW_COLUMNS: Record<ProcessingTarget, { key: string; label: string }[]> = {
+  users: [
+    { key: "name", label: "Name" },
+    { key: "email", label: "Email" },
+    { key: "phone", label: "Phone" },
+  ],
+  products: [
+    { key: "sku", label: "SKU" },
+    { key: "name", label: "Name" },
+    { key: "price", label: "Price" },
+    { key: "currency", label: "Currency" },
+    { key: "category", label: "Category" },
+    { key: "stock_quantity", label: "Stock" },
+  ],
+  categories: [],
+};
+
+const TARGET_LABELS: Record<ProcessingTarget, string> = {
+  users: "Users",
+  products: "Products",
+  categories: "Categories",
+};
 
 // Client-side hints only -- the server independently validates every
 // upload by inspecting its actual file-signature bytes, never trusting
@@ -68,7 +96,17 @@ export function ProcessingUploadPanel() {
   const inputId = useId();
 
   const isImageFlow = source === "image" || source === "screenshot";
-  const isSupportedCombination = target === "users" && (source === "csv" || isImageFlow);
+  // Users+CSV is the one combination with no preview step (direct
+  // process() -- see docs/architecture/input-processing.md, "Why CSV has
+  // no preview step"). Every other implemented combination -- Users'
+  // image/screenshot, and both of Products' sources -- goes through
+  // preview() -> confirm() instead (see docs/architecture/
+  // product-processing.md, "Why CSV+Products has no direct process()
+  // path").
+  const isDirectSubmit = target === "users" && source === "csv";
+  const isSupportedCombination =
+    (target === "users" || target === "products") && (source === "csv" || isImageFlow);
+  const usesPreviewFlow = isSupportedCombination && !isDirectSubmit;
 
   // Object URLs must be revoked when replaced or on unmount -- otherwise
   // each selected image leaks its blob for the life of the tab.
@@ -208,7 +246,7 @@ export function ProcessingUploadPanel() {
         <Card>
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-sm font-medium">Extracted Users</div>
+              <div className="text-sm font-medium">Extracted {TARGET_LABELS[preview.target]}</div>
               <p className="mt-1 flex items-center gap-3 text-sm">
                 <span className="text-emerald-300">{preview.valid_records} valid</span>
                 <span className="text-red-300">{preview.invalid_records} invalid</span>
@@ -241,17 +279,21 @@ export function ProcessingUploadPanel() {
               <table className="w-full text-left text-xs">
                 <thead className="sticky top-0 bg-[var(--surface)]">
                   <tr className="border-b border-[var(--border)] uppercase tracking-wide text-[var(--muted)]">
-                    <th className="px-3 py-2 font-medium">Name</th>
-                    <th className="px-3 py-2 font-medium">Email</th>
-                    <th className="px-3 py-2 font-medium">Phone</th>
+                    {PREVIEW_COLUMNS[preview.target].map((column) => (
+                      <th key={column.key} className="px-3 py-2 font-medium">
+                        {column.label}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {preview.records.map((record, i) => (
-                    <tr key={`${record.email}-${i}`} className="border-b border-[var(--border)] last:border-0">
-                      <td className="px-3 py-1.5">{record.name}</td>
-                      <td className="px-3 py-1.5">{record.email}</td>
-                      <td className="px-3 py-1.5">{record.phone ?? "—"}</td>
+                    <tr key={i} className="border-b border-[var(--border)] last:border-0">
+                      {PREVIEW_COLUMNS[preview.target].map((column) => (
+                        <td key={column.key} className="px-3 py-1.5">
+                          {record[column.key] ?? "—"}
+                        </td>
+                      ))}
                     </tr>
                   ))}
                 </tbody>
@@ -344,7 +386,8 @@ export function ProcessingUploadPanel() {
         <Card className="border-dashed">
           <div className="text-sm text-[var(--muted)]">
             {TARGETS.find((t) => t.value === target)?.label} via {SOURCES.find((s) => s.value === source)?.label} is
-            not implemented yet. Select <strong className="text-[var(--foreground)]">Users</strong> with{" "}
+            not implemented yet. Select <strong className="text-[var(--foreground)]">Users</strong> or{" "}
+            <strong className="text-[var(--foreground)]">Products</strong> with{" "}
             <strong className="text-[var(--foreground)]">CSV</strong>,{" "}
             <strong className="text-[var(--foreground)]">Image</strong>, or{" "}
             <strong className="text-[var(--foreground)]">Screenshot</strong> to process input today.
@@ -457,7 +500,7 @@ export function ProcessingUploadPanel() {
           <div className="flex items-center gap-3">
             <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-[var(--border)] border-t-[var(--accent)]" />
             <div className="text-sm">
-              <div className="font-medium">Analyzing image…</div>
+              <div className="font-medium">{isImageFlow ? "Analyzing image…" : "Analyzing file…"}</div>
               <div className="mt-0.5 text-xs text-[var(--muted)]">Extracting rows · Validating records</div>
             </div>
           </div>
@@ -470,7 +513,7 @@ export function ProcessingUploadPanel() {
         </Card>
       )}
 
-      {isSupportedCombination && source === "csv" && (
+      {isDirectSubmit && (
         <div>
           <button
             type="button"
@@ -483,7 +526,7 @@ export function ProcessingUploadPanel() {
         </div>
       )}
 
-      {isSupportedCombination && isImageFlow && (
+      {usesPreviewFlow && (
         <div>
           <button
             type="button"

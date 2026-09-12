@@ -339,11 +339,12 @@ the new endpoint:
 
 - A real `Text`/`Url` extractor -- explicitly out of scope for this phase (see this document's
   opening note).
-- `product.process`/`category.process` handlers and their CSV-import adapters, following the
-  mechanical pattern `user-import.md` §1.1 and this document's §5 both lay out. Once built, the
-  same `IOcrProvider`/`ImageExtractor` pipeline (§13-§14) could in principle serve
-  Image+Products/Categories too, through their own mapping adapters (mirroring §15) -- not started
-  this phase.
+- `product.process` and its CSV-import adapter -- **done as of Phase 3E**: see
+  [`product-processing.md`](product-processing.md), which follows exactly the mechanical pattern
+  predicted here (`user-import.md` §1.1 and this document's §5). As anticipated, the same
+  `IOcrProvider`/`ImageExtractor` pipeline (§13-§14) now also serves Image+Products, through its
+  own mapping adapter (mirroring §15), with zero changes to `ImageExtractor` itself.
+  `category.process` remains undone -- still deferred, same pattern.
 - An `ExtractorRegistry` mirroring `HandlerRegistry`, once a second concrete `IInputExtractor`
   needing dynamic dispatch exists to justify one (today `InputProcessingService` holds `CsvExtractor`
   and `ImageExtractor` -- unused and injected, respectively -- directly, no registry).

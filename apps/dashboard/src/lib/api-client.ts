@@ -11,11 +11,12 @@ import type {
   ListWorkersResponse,
   ListWorkflowsResponse,
   ListWorkloadItemsResponse,
+  ListProductsResponse,
   ListWorkloadsResponse,
-  NormalizedUserRecord,
   PreviewResponse,
   ProcessingTarget,
   ProcessResponse,
+  StructuredRecord,
   UserImportResponse,
   Workload,
 } from "@flowforge/shared";
@@ -145,9 +146,16 @@ export const apiClient = {
     formData.append("file", file, file.name);
     return requestForm<PreviewResponse>("/api/v1/process/preview", formData);
   },
-  confirmProcess: (target: ProcessingTarget, records: NormalizedUserRecord[]) =>
+  confirmProcess: (target: ProcessingTarget, records: StructuredRecord[]) =>
     request<ProcessResponse>("/api/v1/process/confirm", {
       method: "POST",
       body: JSON.stringify({ target, records }),
     }),
+
+  // Phase 3E: the Product domain's read API (see
+  // docs/architecture/product-processing.md). Products are written only
+  // by handlers::ProductProcessHandler at job-execution time -- there is
+  // no createProduct() here, matching the read-only route this hits.
+  listProducts: (limit = 50, offset = 0) =>
+    request<ListProductsResponse>(`/api/v1/products?limit=${limit}&offset=${offset}`),
 };

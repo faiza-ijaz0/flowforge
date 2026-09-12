@@ -6,11 +6,13 @@
 #include "flowforge/engine/job_executor.hpp"
 #include "flowforge/extractors/image_extractor.hpp"
 #include "flowforge/handlers/builtin_handlers.hpp"
+#include "flowforge/handlers/product_process_handler.hpp"
 #include "flowforge/providers/tesseract_ocr_provider.hpp"
 #include "http/cors.hpp"
 #include "http/routes/health_routes.hpp"
 #include "http/routes/job_routes.hpp"
 #include "http/routes/process_routes.hpp"
+#include "http/routes/product_routes.hpp"
 #include "http/routes/worker_routes.hpp"
 #include "http/routes/workflow_routes.hpp"
 #include "http/routes/workload_routes.hpp"
@@ -31,6 +33,19 @@ Result<std::unique_ptr<App>> App::create(infra::AppConfig config) {
   auto handler_registry = std::make_shared<engine::HandlerRegistry>();
   if (auto registered = handlers::register_builtin_handlers(*handler_registry); !registered) {
     logger->critical("server", "failed to register built-in handlers",
+                     {{.key = "error", .value = registered.error().message()}});
+    return std::unexpected(registered.error());
+  }
+  // Phase 3E: registered separately from register_builtin_handlers, not
+  // inside it -- ProductProcessHandler takes a constructor-injected
+  // repository dependency (see its own class comment for why that never
+  // widens engine::ExecutionContext), unlike every handler
+  // register_builtin_handlers already registers, all of which are
+  // dependency-free and default-constructible.
+  if (auto registered = handler_registry->register_handler(
+          std::make_shared<handlers::ProductProcessHandler>(repositories->products));
+      !registered) {
+    logger->critical("server", "failed to register product handler",
                      {{.key = "error", .value = registered.error().message()}});
     return std::unexpected(registered.error());
   }
@@ -131,6 +146,7 @@ App::App(infra::AppConfig config, std::shared_ptr<infra::Logger> logger,
       worker_repository_(std::move(repositories.workers)),
       execution_manager_(std::move(repositories.executions)),
       workload_repository_(std::move(repositories.workloads)),
+      product_repository_(std::move(repositories.products)),
       job_service_(std::make_shared<services::JobService>(job_repository_, clock_, logger_, metrics_)),
       // Phase 3A: WorkloadService reuses JobService/scheduler exactly like
       // POST /api/v1/jobs does for a single job -- it is constructed here,
@@ -189,6 +205,7 @@ void App::register_routes() {
   register_worker_routes(http_, worker_repository_);
   register_workload_routes(http_, workload_service_, logger_, metrics_);
   register_process_routes(http_, input_processing_service_);
+  register_product_routes(http_, product_repository_);
 
   http_.set_logger(
       [logger = logger_, metrics = metrics_](const httplib::Request& req, const httplib::Response& res) {

@@ -8,6 +8,7 @@
 #include "flowforge/infra/logger.hpp"
 #include "flowforge/infra/metrics.hpp"
 #include "flowforge/persistence/job_repository.hpp"
+#include "flowforge/persistence/product_repository.hpp"
 #include "flowforge/persistence/worker_repository.hpp"
 #include "flowforge/persistence/workflow_repository.hpp"
 #include "flowforge/persistence/workload_repository.hpp"
@@ -24,6 +25,7 @@ struct RepositoryBundle {
   std::shared_ptr<IWorkerRepository> workers;
   std::shared_ptr<engine::IExecutionManager> executions;
   std::shared_ptr<IWorkloadRepository> workloads;
+  std::shared_ptr<IProductRepository> products;
 
   /// Cheap, non-blocking readiness signal for whichever persistence
   /// backend is actually active (Phase 2B-5) -- always returns `true` for

@@ -11,6 +11,7 @@ add_executable(flowforge_engine_tests
   domain/execution_test.cpp
   domain/workload_test.cpp
   domain/user_record_test.cpp
+  domain/product_record_test.cpp
   domain/input_source_test.cpp
   domain/processing_target_test.cpp
   domain/structured_record_test.cpp
@@ -29,17 +30,20 @@ add_executable(flowforge_engine_tests
   handlers/transform_handler_test.cpp
   handlers/delay_handler_test.cpp
   handlers/user_process_handler_test.cpp
+  handlers/product_process_handler_test.cpp
   extractors/csv_extractor_test.cpp
   extractors/image_extractor_test.cpp
   providers/tesseract_ocr_provider_test.cpp
   persistence/in_memory_job_repository_test.cpp
   persistence/in_memory_execution_repository_test.cpp
   persistence/in_memory_workload_repository_test.cpp
+  persistence/in_memory_product_repository_test.cpp
   services/job_service_test.cpp
   services/workload_service_test.cpp
   services/user_import_parser_test.cpp
   services/user_import_test.cpp
   services/user_mapping_test.cpp
+  services/product_mapping_test.cpp
   services/input_processing_service_test.cpp
 )
 
@@ -70,6 +74,7 @@ if(FLOWFORGE_WITH_POSTGRES)
     persistence/postgres/postgres_execution_repository_test.cpp
     persistence/postgres/postgres_retry_engine_acceptance_test.cpp
     persistence/postgres/postgres_workload_repository_test.cpp
+    persistence/postgres/postgres_product_repository_test.cpp
   )
   target_include_directories(flowforge_engine_tests PRIVATE persistence/postgres)
   target_link_libraries(flowforge_engine_tests PRIVATE pqxx)

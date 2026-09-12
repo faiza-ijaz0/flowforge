@@ -127,6 +127,73 @@ Result<std::vector<domain::Workload>> InMemoryWorkloadRepository::list(std::size
   return result;
 }
 
+// --- InMemoryProductRepository -------------------------------------------
+
+Result<void> InMemoryProductRepository::upsert(const infra::JobId& job_id,
+                                               const domain::NormalizedProductRecord& record) {
+  std::lock_guard lock(mutex_);
+  const auto now = clock_->now();
+  auto existing_it = id_by_sku_.find(record.sku);
+  if (existing_it != id_by_sku_.end()) {
+    domain::Product& product = products_by_id_.at(existing_it->second);
+    product.name = record.name;
+    product.price = record.price;
+    product.currency = record.currency;
+    product.category = record.category;
+    product.description = record.description;
+    product.stock_quantity = record.stock_quantity;
+    product.job_id = job_id;
+    product.updated_at = now;
+    return {};
+  }
+
+  domain::Product product{.id = infra::ProductId::generate(),
+                          .sku = record.sku,
+                          .name = record.name,
+                          .price = record.price,
+                          .currency = record.currency,
+                          .category = record.category,
+                          .description = record.description,
+                          .stock_quantity = record.stock_quantity,
+                          .job_id = job_id,
+                          .created_at = now,
+                          .updated_at = now};
+  const std::string id = product.id.value();
+  id_by_sku_.emplace(record.sku, id);
+  products_by_id_.emplace(id, std::move(product));
+  insertion_order_.push_back(id);
+  return {};
+}
+
+Result<std::optional<domain::Product>> InMemoryProductRepository::find_by_sku(const std::string& sku) const {
+  std::lock_guard lock(mutex_);
+  auto it = id_by_sku_.find(sku);
+  if (it == id_by_sku_.end()) {
+    return std::optional<domain::Product>(std::nullopt);
+  }
+  return std::optional<domain::Product>(products_by_id_.at(it->second));
+}
+
+Result<std::vector<domain::Product>> InMemoryProductRepository::list(std::size_t limit,
+                                                                     std::size_t offset) const {
+  std::lock_guard lock(mutex_);
+  std::vector<domain::Product> result;
+  if (offset >= insertion_order_.size()) {
+    return result;
+  }
+  const std::size_t end = std::min(insertion_order_.size(), offset + limit);
+  result.reserve(end - offset);
+  for (std::size_t i = offset; i < end; ++i) {
+    result.push_back(products_by_id_.at(insertion_order_[i]));
+  }
+  return result;
+}
+
+Result<std::size_t> InMemoryProductRepository::count() const {
+  std::lock_guard lock(mutex_);
+  return insertion_order_.size();
+}
+
 // --- InMemoryWorkflowRepository ------------------------------------------
 
 Result<void> InMemoryWorkflowRepository::insert(const domain::Workflow& workflow) {

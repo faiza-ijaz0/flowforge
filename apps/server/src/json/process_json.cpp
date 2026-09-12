@@ -28,10 +28,10 @@ nlohmann::json to_json(const services::ProcessResult& result) {
   return body;
 }
 
-nlohmann::json to_json(const domain::NormalizedUserRecord& record) {
-  nlohmann::json body{{"name", record.name}, {"email", record.email}};
-  if (record.phone) {
-    body["phone"] = *record.phone;
+nlohmann::json to_json(const domain::StructuredRecord& record) {
+  nlohmann::json body = nlohmann::json::object();
+  for (const auto& [key, value] : record.fields) {
+    body[key] = value;
   }
   return body;
 }
@@ -97,17 +97,13 @@ Result<services::ConfirmRequest> parse_confirm_request(const nlohmann::json& bod
       return std::unexpected(
           make_error(ErrorCode::Validation, "each element of 'records' must be an object"));
     }
-    auto name_it = item.find("name");
-    auto email_it = item.find("email");
-    if (name_it == item.end() || !name_it->is_string() || email_it == item.end() || !email_it->is_string()) {
-      return std::unexpected(
-          make_error(ErrorCode::Validation, "each record must have string 'name' and 'email' fields"));
-    }
-    domain::NormalizedUserRecord record;
-    record.name = name_it->get<std::string>();
-    record.email = email_it->get<std::string>();
-    if (auto phone_it = item.find("phone"); phone_it != item.end() && phone_it->is_string()) {
-      record.phone = phone_it->get<std::string>();
+    domain::StructuredRecord record;
+    for (const auto& [key, value] : item.items()) {
+      if (!value.is_string()) {
+        return std::unexpected(make_error(ErrorCode::Validation,
+                                          "each record field must be a string (field '" + key + "' is not)"));
+      }
+      record.fields.emplace(key, value.get<std::string>());
     }
     request.records.push_back(std::move(record));
   }

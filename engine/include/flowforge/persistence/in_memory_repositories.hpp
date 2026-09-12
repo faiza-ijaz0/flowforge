@@ -5,7 +5,9 @@
 #include <mutex>
 
 #include "flowforge/engine/execution_manager.hpp"
+#include "flowforge/infra/clock.hpp"
 #include "flowforge/persistence/job_repository.hpp"
+#include "flowforge/persistence/product_repository.hpp"
 #include "flowforge/persistence/worker_repository.hpp"
 #include "flowforge/persistence/workflow_repository.hpp"
 #include "flowforge/persistence/workload_repository.hpp"
@@ -47,6 +49,33 @@ class InMemoryWorkloadRepository final : public IWorkloadRepository {
  private:
   mutable std::mutex mutex_;
   std::map<std::string, domain::Workload> workloads_by_id_;
+  std::vector<std::string> insertion_order_;
+};
+
+/// Thread-safe, in-process implementation of `IProductRepository` --
+/// mirrors `InMemoryWorkloadRepository`'s conventions, plus the id/
+/// timestamp generation a real `upsert()` needs (see that method's own
+/// doc comment): unlike the other in-memory repositories, callers never
+/// construct a fully-formed `domain::Product` themselves, so this class
+/// owns turning a `NormalizedProductRecord` into one -- exactly the
+/// division of labor `PostgresProductRepository` has with its `INSERT
+/// ... ON CONFLICT` statement's server-side defaults.
+class InMemoryProductRepository final : public IProductRepository {
+ public:
+  explicit InMemoryProductRepository(std::shared_ptr<infra::Clock> clock = infra::make_system_clock())
+      : clock_(std::move(clock)) {}
+
+  Result<void> upsert(const infra::JobId& job_id, const domain::NormalizedProductRecord& record) override;
+  [[nodiscard]] Result<std::optional<domain::Product>> find_by_sku(const std::string& sku) const override;
+  [[nodiscard]] Result<std::vector<domain::Product>> list(std::size_t limit,
+                                                          std::size_t offset) const override;
+  [[nodiscard]] Result<std::size_t> count() const override;
+
+ private:
+  std::shared_ptr<infra::Clock> clock_;
+  mutable std::mutex mutex_;
+  std::map<std::string, domain::Product> products_by_id_;
+  std::map<std::string, std::string> id_by_sku_;
   std::vector<std::string> insertion_order_;
 };
 

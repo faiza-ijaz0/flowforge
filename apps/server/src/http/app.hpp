@@ -67,6 +67,7 @@ class App {
   std::shared_ptr<persistence::IWorkerRepository> worker_repository_;
   std::shared_ptr<engine::IExecutionManager> execution_manager_;
   std::shared_ptr<persistence::IWorkloadRepository> workload_repository_;
+  std::shared_ptr<persistence::IProductRepository> product_repository_;
   std::shared_ptr<services::JobService> job_service_;
   std::shared_ptr<services::WorkloadService> workload_service_;
   std::shared_ptr<services::InputProcessingService> input_processing_service_;

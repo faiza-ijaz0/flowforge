@@ -38,17 +38,23 @@ export interface ProcessResponse extends Workload {
 }
 
 /**
- * A normalized, ready-to-confirm user record -- mirrors
- * flowforge::domain::NormalizedUserRecord. Round-tripped, unmodified,
- * from a PreviewResponse's `records` into `apiClient.confirmProcess`'s
- * `records` (Phase 3D-1 -- see docs/architecture/input-processing.md,
+ * A normalized, ready-to-confirm record -- a flat map of canonical field
+ * name to string value, mirroring flowforge::domain::StructuredRecord
+ * (Phase 3E: generalized from the Users-only `{name,email,phone}` shape
+ * so the same Processing Center UI serves every target -- see
+ * docs/architecture/product-processing.md, "Why InputProcessingService is
+ * not duplicated for Products"). Which keys are present depends entirely
+ * on the request's `target`: `name`/`email`/`phone`? for Users;
+ * `sku`/`name`/`price`/`currency`/`category`?/`description`?/
+ * `stock_quantity` for Products. Round-tripped, unmodified, from a
+ * PreviewResponse's `records` into `apiClient.confirmProcess`'s `records`
+ * (Phase 3D-1 -- see docs/architecture/input-processing.md,
  * "Confirmation").
  */
-export interface NormalizedUserRecord {
-  name: string;
-  email: string;
-  phone?: string;
-}
+export type StructuredRecord = Record<string, string>;
+
+/** @deprecated Phase 3D-1 name for {@link StructuredRecord}; kept only as an alias for any external caller. */
+export type NormalizedUserRecord = StructuredRecord;
 
 /**
  * Response of POST /api/v1/process/preview -- mirrors
@@ -62,9 +68,37 @@ export interface PreviewResponse {
   total_records: number;
   valid_records: number;
   invalid_records: number;
-  records: NormalizedUserRecord[];
+  records: StructuredRecord[];
   rejected_records: RejectedRecord[];
   rejected_records_truncated: boolean;
   warnings: string[];
   average_confidence: number | null;
+}
+
+/**
+ * A persisted product row -- mirrors flowforge::domain::Product
+ * (Phase 3E, see docs/architecture/product-processing.md). Written only
+ * by handlers::ProductProcessHandler at job-execution time; read via
+ * `GET /api/v1/products`.
+ */
+export interface Product {
+  id: string;
+  sku: string;
+  name: string;
+  price: number;
+  currency: string;
+  category: string | null;
+  description: string | null;
+  stock_quantity: number;
+  job_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Response of GET /api/v1/products -- bounded, offset-paginated. */
+export interface ListProductsResponse {
+  products: Product[];
+  total: number;
+  limit: number;
+  offset: number;
 }

@@ -1,6 +1,9 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <cstddef>
+#include <initializer_list>
 #include <map>
 #include <optional>
 #include <string>
@@ -36,6 +39,42 @@ struct StructuredRecord {
       return std::nullopt;
     }
     return std::string_view(it->second);
+  }
+
+  /// Finds the first field whose (case-insensitive, trimmed) name
+  /// matches one of `aliases` -- looser than `field()`'s exact match,
+  /// for a target-specific mapping adapter matching a human- or OCR-
+  /// generated column label (e.g. `"Product Code"`) against a canonical
+  /// field name (e.g. `"sku"`). Shared by every target's mapping adapter
+  /// (`services::map_structured_records_to_users`,
+  /// `services::map_structured_records_to_products`, ...) so this
+  /// fuzzy-matching rule -- and its rationale, see
+  /// docs/architecture/input-processing.md, "Why image header matching is
+  /// case-insensitive" -- is defined exactly once, not once per target.
+  [[nodiscard]] std::optional<std::string_view> field_by_aliases(
+      std::initializer_list<std::string_view> aliases) const noexcept {
+    for (const auto& [key, value] : fields) {
+      const std::string_view trimmed_key = trim(key);
+      for (const auto& alias : aliases) {
+        if (trimmed_key.size() == alias.size() &&
+            std::ranges::equal(trimmed_key, alias, [](unsigned char a, unsigned char b) {
+              return std::tolower(a) == std::tolower(b);
+            })) {
+          return std::string_view(value);
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
+ private:
+  [[nodiscard]] static std::string_view trim(std::string_view value) noexcept {
+    const auto begin = value.find_first_not_of(" \t\r\n");
+    if (begin == std::string_view::npos) {
+      return {};
+    }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(begin, end - begin + 1);
   }
 };
 

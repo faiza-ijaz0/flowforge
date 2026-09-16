@@ -19,6 +19,7 @@ add_library(flowforge_engine STATIC
   src/domain/workload.cpp
   src/domain/user_record.cpp
   src/domain/product_record.cpp
+  src/domain/category_record.cpp
   src/domain/input_source.cpp
   src/domain/processing_target.cpp
   src/engine/handler_registry.cpp
@@ -31,6 +32,7 @@ add_library(flowforge_engine STATIC
   src/handlers/transform_handler.cpp
   src/handlers/user_process_handler.cpp
   src/handlers/product_process_handler.cpp
+  src/handlers/category_process_handler.cpp
   src/handlers/builtin_handlers.cpp
   src/extractors/csv_extractor.cpp
   src/extractors/image_extractor.cpp
@@ -43,6 +45,7 @@ add_library(flowforge_engine STATIC
   src/services/user_import.cpp
   src/services/user_mapping.cpp
   src/services/product_mapping.cpp
+  src/services/category_mapping.cpp
   src/services/input_processing_service.cpp
 )
 
@@ -77,6 +80,7 @@ if(FLOWFORGE_WITH_POSTGRES)
     src/persistence/postgres/postgres_execution_repository.cpp
     src/persistence/postgres/postgres_workload_repository.cpp
     src/persistence/postgres/postgres_product_repository.cpp
+    src/persistence/postgres/postgres_category_repository.cpp
   )
   target_link_libraries(flowforge_engine PRIVATE pqxx)
   # PUBLIC: repository_factory.hpp's #ifdef FLOWFORGE_WITH_POSTGRES branch

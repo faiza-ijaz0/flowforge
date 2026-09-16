@@ -297,13 +297,17 @@ TEST_F(ProcessRoutesTest, ConfirmRejectsMalformedJsonBody) {
   EXPECT_EQ(res->status, 400);
 }
 
-TEST_F(ProcessRoutesTest, ConfirmRejectsUnimplementedTarget) {
-  // Products (unlike here) is now a supported confirm() target -- see
-  // the Products-specific tests below. Categories has no mapping/handler
-  // yet, so it remains the genuinely unsupported case.
+TEST_F(ProcessRoutesTest, ConfirmRejectsAnUnrecognizedTargetString) {
+  // As of Phase 3F, confirm() supports all three declared
+  // domain::ProcessingTarget values (Users, Products, Categories) -- there
+  // is no longer a declared-but-unimplemented target to exercise here
+  // (contrast with Phase 3E, where this test asserted Categories was
+  // rejected). What remains genuinely rejected is a target string that
+  // doesn't parse to any ProcessingTarget at all -- rejected at the JSON
+  // shape layer (process_json.cpp's parse_confirm_request), before
+  // InputProcessingService is ever reached.
   auto client = make_client();
-  nlohmann::json body{{"target", "categories"},
-                      {"records", nlohmann::json::array({{{"name", "Ali"}, {"email", "ali@example.com"}}})}};
+  nlohmann::json body{{"target", "orders"}, {"records", nlohmann::json::array({{{"name", "Ali"}}})}};
   auto res = client.Post("/api/v1/process/confirm", body.dump(), "application/json");
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, 400);
@@ -687,6 +691,239 @@ TEST_F(ProcessRoutesTest, GetProductsSupportsPagination) {
   EXPECT_EQ(nlohmann::json::parse(page2->body)["products"].size(), 1u);
 }
 
+// --- Phase 3F: Categories -------------------------------------------------
+
+TEST_F(ProcessRoutesTest, PreviewCsvCategoriesExtractsRecordsAndCreatesNoWorkload) {
+  auto client = make_client();
+  auto before = client.Get("/api/v1/workloads?limit=200");
+  ASSERT_TRUE(before);
+  const auto before_count = nlohmann::json::parse(before->body)["workloads"].size();
+
+  const std::string csv =
+      "name,slug,description,parent_slug\n"
+      "Electronics,,Gadgets and gizmos,\n"
+      "Home & Kitchen,,,\n"
+      "###,,this name has no letters or digits,\n";
+  auto res = client.Post("/api/v1/process/preview", process_request("csv", "categories", csv));
+  ASSERT_TRUE(res);
+  ASSERT_EQ(res->status, 200);
+  auto parsed = nlohmann::json::parse(res->body);
+  EXPECT_EQ(parsed["source"], "csv");
+  EXPECT_EQ(parsed["target"], "categories");
+  EXPECT_EQ(parsed["total_records"], 3);
+  EXPECT_EQ(parsed["valid_records"], 2);
+  EXPECT_EQ(parsed["invalid_records"], 1);
+  ASSERT_EQ(parsed["records"].size(), 2u);
+  EXPECT_EQ(parsed["records"][0]["name"], "Electronics");
+  EXPECT_EQ(parsed["records"][0]["slug"], "electronics");
+  EXPECT_EQ(parsed["records"][1]["slug"], "home-kitchen")
+      << "slug must be derived deterministically from name when the slug column is blank";
+  ASSERT_EQ(parsed["rejected_records"].size(), 1u);
+  EXPECT_EQ(parsed["rejected_records"][0]["index"], 3);
+
+  auto after = client.Get("/api/v1/workloads?limit=200");
+  ASSERT_TRUE(after);
+  EXPECT_EQ(nlohmann::json::parse(after->body)["workloads"].size(), before_count)
+      << "preview must never create a workload";
+}
+
+TEST_F(ProcessRoutesTest, ConfirmCsvCategoriesCreatesOneWorkloadAndPersistsRealCategories) {
+  auto client = make_client();
+  const std::string csv = "name\nElectronics\nHome & Kitchen\n";
+  auto preview_res = client.Post("/api/v1/process/preview", process_request("csv", "categories", csv));
+  ASSERT_TRUE(preview_res);
+  ASSERT_EQ(preview_res->status, 200);
+  auto preview_parsed = nlohmann::json::parse(preview_res->body);
+
+  nlohmann::json confirm_body{{"target", "categories"}, {"records", preview_parsed["records"]}};
+  auto confirm_res = client.Post("/api/v1/process/confirm", confirm_body.dump(), "application/json");
+  ASSERT_TRUE(confirm_res);
+  ASSERT_EQ(confirm_res->status, 201);
+  auto confirm_parsed = nlohmann::json::parse(confirm_res->body);
+  EXPECT_EQ(confirm_parsed["type"], "category.process");
+  EXPECT_EQ(confirm_parsed["total_records"], 2);
+  EXPECT_EQ(confirm_parsed["valid_records"], 2);
+  EXPECT_EQ(confirm_parsed["total_items"], 2);
+  const std::string workload_id = confirm_parsed["id"].get<std::string>();
+
+  std::string final_status;
+  for (int i = 0; i < 100; ++i) {
+    auto get_res = client.Get("/api/v1/workloads/" + workload_id);
+    ASSERT_TRUE(get_res);
+    auto workload = nlohmann::json::parse(get_res->body);
+    final_status = workload["status"].get<std::string>();
+    if (final_status == "succeeded" || final_status == "failed") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  EXPECT_EQ(final_status, "succeeded");
+
+  // The job handler (handlers::CategoryProcessHandler), not this route,
+  // persisted these -- GET /api/v1/categories reads real repository state.
+  auto categories_res = client.Get("/api/v1/categories?limit=50");
+  ASSERT_TRUE(categories_res);
+  ASSERT_EQ(categories_res->status, 200);
+  auto categories_parsed = nlohmann::json::parse(categories_res->body);
+  EXPECT_EQ(categories_parsed["total"], 2u);
+  ASSERT_EQ(categories_parsed["categories"].size(), 2u);
+  bool found_electronics = false;
+  for (const auto& category : categories_parsed["categories"]) {
+    if (category["slug"] == "electronics") {
+      found_electronics = true;
+      EXPECT_EQ(category["name"], "Electronics");
+      EXPECT_FALSE(category["job_id"].is_null());
+    }
+  }
+  EXPECT_TRUE(found_electronics);
+}
+
+TEST_F(ProcessRoutesTest, ConfirmNeverSubmitsAnInvalidCategoryAsAJob) {
+  auto client = make_client();
+  nlohmann::json body{{"target", "categories"},
+                      {"records", nlohmann::json::array({{{"name", "Electronics"}}, {{"name", "###"}}})}};
+  auto res = client.Post("/api/v1/process/confirm", body.dump(), "application/json");
+  ASSERT_TRUE(res);
+  ASSERT_EQ(res->status, 201);
+  auto parsed = nlohmann::json::parse(res->body);
+  EXPECT_EQ(parsed["valid_records"], 1);
+  EXPECT_EQ(parsed["invalid_records"], 1);
+  EXPECT_EQ(parsed["total_items"], 1);
+  ASSERT_EQ(parsed["items"].size(), 1u);
+}
+
+TEST_F(ProcessRoutesTest, ConfirmCategoryWithValidPreexistingParentSucceeds) {
+  auto client = make_client();
+
+  // Two-stage import (see docs/architecture/category-processing.md,
+  // "Parent semantics"): the parent must already be a persisted category
+  // before a child job referencing it can succeed.
+  nlohmann::json parent_body{{"target", "categories"},
+                             {"records", nlohmann::json::array({{{"name", "Electronics"}}})}};
+  auto parent_res = client.Post("/api/v1/process/confirm", parent_body.dump(), "application/json");
+  ASSERT_TRUE(parent_res);
+  ASSERT_EQ(parent_res->status, 201);
+  const std::string parent_workload_id = nlohmann::json::parse(parent_res->body)["id"].get<std::string>();
+  for (int i = 0; i < 100; ++i) {
+    auto get_res = client.Get("/api/v1/workloads/" + parent_workload_id);
+    if (nlohmann::json::parse(get_res->body)["status"] == "succeeded")
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  nlohmann::json child_body{
+      {"target", "categories"},
+      {"records", nlohmann::json::array({{{"name", "Laptops"}, {"parent_slug", "electronics"}}})}};
+  auto child_res = client.Post("/api/v1/process/confirm", child_body.dump(), "application/json");
+  ASSERT_TRUE(child_res);
+  ASSERT_EQ(child_res->status, 201);
+  const std::string child_workload_id = nlohmann::json::parse(child_res->body)["id"].get<std::string>();
+
+  std::string final_status;
+  for (int i = 0; i < 100; ++i) {
+    auto get_res = client.Get("/api/v1/workloads/" + child_workload_id);
+    auto workload = nlohmann::json::parse(get_res->body);
+    final_status = workload["status"].get<std::string>();
+    if (final_status == "succeeded" || final_status == "failed")
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  EXPECT_EQ(final_status, "succeeded");
+
+  auto categories_res = client.Get("/api/v1/categories?limit=50");
+  auto categories_parsed = nlohmann::json::parse(categories_res->body);
+  bool found_laptops = false;
+  for (const auto& category : categories_parsed["categories"]) {
+    if (category["slug"] == "laptops") {
+      found_laptops = true;
+      EXPECT_EQ(category["parent_slug"], "electronics");
+    }
+  }
+  EXPECT_TRUE(found_laptops);
+}
+
+TEST_F(ProcessRoutesTest, ConfirmCategoryWithMissingParentIsAcceptedAtConfirmButFailsAsAJob) {
+  // Parent-existence is a database-dependent check that only
+  // CategoryProcessHandler (which owns a repository) can perform -- see
+  // its class comment. confirm() itself has no database access beyond
+  // WorkloadService, so a record referencing a nonexistent parent passes
+  // confirm()'s structural revalidation and becomes a real job, which then
+  // fails at execution time -- a deliberate, documented tradeoff, not a
+  // bug.
+  auto client = make_client();
+  nlohmann::json body{
+      {"target", "categories"},
+      {"records", nlohmann::json::array({{{"name", "Laptops"}, {"parent_slug", "does-not-exist"}}})}};
+  auto confirm_res = client.Post("/api/v1/process/confirm", body.dump(), "application/json");
+  ASSERT_TRUE(confirm_res);
+  ASSERT_EQ(confirm_res->status, 201);
+  auto confirm_parsed = nlohmann::json::parse(confirm_res->body);
+  EXPECT_EQ(confirm_parsed["valid_records"], 1)
+      << "structurally valid at confirm time -- parent existence is "
+         "checked later, at job execution";
+  const std::string workload_id = confirm_parsed["id"].get<std::string>();
+
+  std::string final_status;
+  for (int i = 0; i < 100; ++i) {
+    auto get_res = client.Get("/api/v1/workloads/" + workload_id);
+    auto workload = nlohmann::json::parse(get_res->body);
+    final_status = workload["status"].get<std::string>();
+    if (final_status == "succeeded" || final_status == "failed")
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  EXPECT_EQ(final_status, "failed");
+
+  auto items_res = client.Get("/api/v1/workloads/" + workload_id + "/items?limit=10");
+  auto items_parsed = nlohmann::json::parse(items_res->body);
+  ASSERT_EQ(items_parsed["items"].size(), 1u);
+  EXPECT_EQ(items_parsed["items"][0]["status"], "failed");
+  EXPECT_NE(items_parsed["items"][0]["last_error"].get<std::string>().find("does not exist"),
+            std::string::npos);
+}
+
+TEST_F(ProcessRoutesTest, GetCategoriesReturnsEmptyListInitially) {
+  auto client = make_client();
+  auto res = client.Get("/api/v1/categories");
+  ASSERT_TRUE(res);
+  ASSERT_EQ(res->status, 200);
+  auto parsed = nlohmann::json::parse(res->body);
+  EXPECT_EQ(parsed["total"], 0u);
+  EXPECT_TRUE(parsed["categories"].empty());
+}
+
+TEST_F(ProcessRoutesTest, GetCategoriesSupportsPagination) {
+  auto client = make_client();
+  nlohmann::json records = nlohmann::json::array();
+  for (int i = 0; i < 5; ++i) {
+    records.push_back({{"name", "Category " + std::to_string(i)}});
+  }
+  nlohmann::json body{{"target", "categories"}, {"records", records}};
+  auto confirm_res = client.Post("/api/v1/process/confirm", body.dump(), "application/json");
+  ASSERT_TRUE(confirm_res);
+  ASSERT_EQ(confirm_res->status, 201);
+  const std::string workload_id = nlohmann::json::parse(confirm_res->body)["id"].get<std::string>();
+
+  for (int i = 0; i < 100; ++i) {
+    auto get_res = client.Get("/api/v1/workloads/" + workload_id);
+    auto workload = nlohmann::json::parse(get_res->body);
+    if (workload["status"] == "succeeded") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  auto page1 = client.Get("/api/v1/categories?limit=2&offset=0");
+  ASSERT_TRUE(page1);
+  auto page1_parsed = nlohmann::json::parse(page1->body);
+  EXPECT_EQ(page1_parsed["total"], 5u);
+  EXPECT_EQ(page1_parsed["categories"].size(), 2u);
+
+  auto page2 = client.Get("/api/v1/categories?limit=2&offset=4");
+  ASSERT_TRUE(page2);
+  EXPECT_EQ(nlohmann::json::parse(page2->body)["categories"].size(), 1u);
+}
+
 // --- Phase 3E: 100+ product acceptance (CSV and image) ------------------
 
 /// Shared by both the CSV and image 100+ product acceptance tests below:
@@ -847,6 +1084,174 @@ TEST(ProcessRoutesBulkPostgresTest, HundredProductImageFlowReconcilesAgainstReal
   // Real OCR: "at least" a large majority, not an exact count -- see
   // docs/architecture/product-processing.md, "100+ product fixture".
   run_bulk_products_acceptance(client, preview_items, /*expected_total=*/100, /*min_valid_records=*/80);
+
+  app->http_server().stop();
+  server_thread.join();
+}
+
+// --- Phase 3F: 100+ category acceptance (CSV and image) -----------------
+
+/// Shared by both the CSV and image 100+ category acceptance tests below
+/// -- mirrors run_bulk_products_acceptance's structure exactly (preview ->
+/// assert DB-write-free -> confirm -> assert exactly one workload/one job
+/// per valid record -> poll to a genuine terminal state -> assert every
+/// job succeeded and every persisted `categories` row is real, reconciled
+/// data). The fixture is deliberately flat (no parent_slug references) --
+/// parent semantics have their own focused tests
+/// (ConfirmCategoryWithValidPreexistingParentSucceeds /
+/// ConfirmCategoryWithMissingParentIsAcceptedAtConfirmButFailsAsAJob)
+/// rather than being mixed into this scale/reconciliation test.
+void run_bulk_categories_acceptance(httplib::Client& client,
+                                    const httplib::MultipartFormDataItems& preview_items,
+                                    std::size_t expected_total, std::size_t min_valid_records) {
+  auto before = client.Get("/api/v1/workloads?limit=500");
+  ASSERT_TRUE(before);
+  const std::size_t workloads_before = nlohmann::json::parse(before->body)["workloads"].size();
+
+  auto preview_res = client.Post("/api/v1/process/preview", preview_items);
+  ASSERT_TRUE(preview_res);
+  ASSERT_EQ(preview_res->status, 200);
+  auto preview_parsed = nlohmann::json::parse(preview_res->body);
+  const std::size_t total_records = preview_parsed["total_records"].get<std::size_t>();
+  const std::size_t valid_records = preview_parsed["valid_records"].get<std::size_t>();
+  ASSERT_EQ(total_records, expected_total);
+  ASSERT_GE(valid_records, min_valid_records);
+
+  auto after_preview = client.Get("/api/v1/workloads?limit=500");
+  ASSERT_TRUE(after_preview);
+  EXPECT_EQ(nlohmann::json::parse(after_preview->body)["workloads"].size(), workloads_before)
+      << "preview must never create a workload";
+
+  nlohmann::json confirm_body{{"target", "categories"}, {"records", preview_parsed["records"]}};
+  auto confirm_res = client.Post("/api/v1/process/confirm", confirm_body.dump(), "application/json");
+  ASSERT_TRUE(confirm_res);
+  ASSERT_EQ(confirm_res->status, 201);
+  auto confirm_parsed = nlohmann::json::parse(confirm_res->body);
+  const std::string workload_id = confirm_parsed["id"].get<std::string>();
+  EXPECT_EQ(confirm_parsed["type"], "category.process");
+  EXPECT_EQ(confirm_parsed["total_items"], valid_records);
+  for (const auto& item : confirm_parsed["items"]) {
+    EXPECT_TRUE(item["scheduled"].get<bool>());
+  }
+
+  auto after_confirm = client.Get("/api/v1/workloads?limit=500");
+  ASSERT_TRUE(after_confirm);
+  EXPECT_EQ(nlohmann::json::parse(after_confirm->body)["workloads"].size(), workloads_before + 1)
+      << "confirm must create exactly one workload";
+
+  std::string final_status;
+  nlohmann::json final_workload;
+  for (int i = 0; i < 300; ++i) {
+    auto get_res = client.Get("/api/v1/workloads/" + workload_id);
+    ASSERT_TRUE(get_res);
+    final_workload = nlohmann::json::parse(get_res->body);
+    final_status = final_workload["status"].get<std::string>();
+    if (final_status == "succeeded" || final_status == "failed") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  EXPECT_EQ(final_status, "succeeded");
+  EXPECT_EQ(final_workload["completed_items"], valid_records);
+  EXPECT_EQ(final_workload["failed_items"], 0u);
+  EXPECT_EQ(final_workload["queued_items"], 0u);
+  EXPECT_EQ(final_workload["running_items"], 0u);
+
+  auto items_res =
+      client.Get("/api/v1/workloads/" + workload_id + "/items?limit=" + std::to_string(valid_records));
+  ASSERT_TRUE(items_res);
+  auto items_parsed = nlohmann::json::parse(items_res->body);
+  EXPECT_EQ(items_parsed["total"], valid_records);
+  std::unordered_set<std::string> job_ids;
+  for (const auto& item : items_parsed["items"]) {
+    EXPECT_EQ(item["status"], "succeeded");
+    job_ids.insert(item["job_id"].get<std::string>());
+  }
+  EXPECT_EQ(job_ids.size(), valid_records) << "no duplicate jobs may exist for this workload";
+
+  // Every job persisted a real categories row -- GET /api/v1/categories
+  // reads actual repository state, not the job response.
+  auto categories_res = client.Get("/api/v1/categories?limit=" + std::to_string(valid_records));
+  ASSERT_TRUE(categories_res);
+  auto categories_parsed = nlohmann::json::parse(categories_res->body);
+  EXPECT_GE(categories_parsed["total"].get<std::size_t>(), valid_records);
+}
+
+TEST(ProcessRoutesBulkPostgresTest, HundredCategoryCsvFlowReconcilesAgainstRealPostgres) {
+  if (!postgres_test_database_url()) {
+    GTEST_SKIP() << "FLOWFORGE_TEST_DATABASE_URL (or FLOWFORGE_DATABASE_URL) is not set -- skipping "
+                    "bulk category acceptance test.";
+  }
+  infra::AppConfig config;
+  config.log_level = infra::LogLevel::Off;
+  config.database_url = *postgres_test_database_url();
+  auto app_result = App::create(config);
+  ASSERT_TRUE(app_result.has_value()) << app_result.error().message();
+  auto app = std::move(*app_result);
+  int port = app->http_server().bind_to_any_port("127.0.0.1");
+  ASSERT_GT(port, 0);
+  std::thread server_thread([&app] { app->http_server().listen_after_bind(); });
+  for (int i = 0; i < 100 && !app->http_server().is_running(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(app->http_server().is_running());
+
+  httplib::Client client("127.0.0.1", port);
+  client.set_connection_timeout(2);
+  client.set_read_timeout(30);
+
+  const std::string csv = read_fixture_file("categories_bulk_100.csv");
+  ASSERT_FALSE(csv.empty());
+  httplib::MultipartFormDataItems preview_items{
+      {.name = "source", .content = "csv", .filename = "", .content_type = ""},
+      {.name = "target", .content = "categories", .filename = "", .content_type = ""},
+      {.name = "file", .content = csv, .filename = "categories.csv", .content_type = "text/csv"},
+  };
+  // The fixture deterministically has exactly 5 invalid ("###" name, no
+  // letters or digits to derive a slug from) rows out of 100 -- see
+  // docs/architecture/category-processing.md, "100+ category fixture".
+  run_bulk_categories_acceptance(client, preview_items, /*expected_total=*/100, /*min_valid_records=*/95);
+
+  app->http_server().stop();
+  server_thread.join();
+}
+
+TEST(ProcessRoutesBulkPostgresTest, HundredCategoryImageFlowReconcilesAgainstRealPostgres) {
+  if (!providers::TesseractCliOcrProvider::discover_executable()) {
+    GTEST_SKIP() << "No usable Tesseract OCR binary found -- skipping real-OCR bulk category test.";
+  }
+  if (!postgres_test_database_url()) {
+    GTEST_SKIP() << "FLOWFORGE_TEST_DATABASE_URL (or FLOWFORGE_DATABASE_URL) is not set -- skipping "
+                    "bulk category acceptance test.";
+  }
+  infra::AppConfig config;
+  config.log_level = infra::LogLevel::Off;
+  config.database_url = *postgres_test_database_url();
+  auto app_result = App::create(config);
+  ASSERT_TRUE(app_result.has_value()) << app_result.error().message();
+  auto app = std::move(*app_result);
+  int port = app->http_server().bind_to_any_port("127.0.0.1");
+  ASSERT_GT(port, 0);
+  std::thread server_thread([&app] { app->http_server().listen_after_bind(); });
+  for (int i = 0; i < 100 && !app->http_server().is_running(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(app->http_server().is_running());
+
+  httplib::Client client("127.0.0.1", port);
+  client.set_connection_timeout(2);
+  client.set_read_timeout(30);
+
+  const std::string image_bytes = read_fixture_file("categories_bulk_100.png");
+  ASSERT_FALSE(image_bytes.empty());
+  httplib::MultipartFormDataItems preview_items{
+      {.name = "source", .content = "image", .filename = "", .content_type = ""},
+      {.name = "target", .content = "categories", .filename = "", .content_type = ""},
+      {.name = "file", .content = image_bytes, .filename = "categories.png", .content_type = "image/png"},
+  };
+  // Real OCR: "at least" a large majority, not an exact count -- see
+  // docs/architecture/category-processing.md, "100+ category fixture".
+  run_bulk_categories_acceptance(client, preview_items, /*expected_total=*/100, /*min_valid_records=*/80);
 
   app->http_server().stop();
   server_thread.join();

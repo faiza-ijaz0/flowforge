@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { href: "/", label: "Overview" },
   { href: "/users", label: "Users" },
   { href: "/products", label: "Products" },
+  { href: "/categories", label: "Categories" },
   { href: "/processing", label: "Processing" },
   { href: "/jobs", label: "Jobs" },
   { href: "/workflows", label: "Workflows" },

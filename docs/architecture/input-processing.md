@@ -344,7 +344,13 @@ the new endpoint:
   predicted here (`user-import.md` §1.1 and this document's §5). As anticipated, the same
   `IOcrProvider`/`ImageExtractor` pipeline (§13-§14) now also serves Image+Products, through its
   own mapping adapter (mirroring §15), with zero changes to `ImageExtractor` itself.
-  `category.process` remains undone -- still deferred, same pattern.
+- `category.process` and its CSV/image-import adapter -- **done as of Phase 3F**: see
+  [`category-processing.md`](category-processing.md), the third and (for now) final instance of
+  the same mechanical pattern. All three `domain::ProcessingTarget` values this codebase declares
+  (Users, Products, Categories) are now fully implemented for CSV and Image/Screenshot import,
+  through one shared `InputProcessingService`/`WorkloadService`/`CsvExtractor`/`ImageExtractor`
+  set -- none of the four duplicated, none aware of any specific domain beyond the small,
+  contained per-target dispatch `input_processing_service.cpp` itself holds.
 - An `ExtractorRegistry` mirroring `HandlerRegistry`, once a second concrete `IInputExtractor`
   needing dynamic dispatch exists to justify one (today `InputProcessingService` holds `CsvExtractor`
   and `ImageExtractor` -- unused and injected, respectively -- directly, no registry).

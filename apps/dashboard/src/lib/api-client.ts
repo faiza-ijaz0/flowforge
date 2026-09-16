@@ -12,6 +12,7 @@ import type {
   ListWorkflowsResponse,
   ListWorkloadItemsResponse,
   ListProductsResponse,
+  ListCategoriesResponse,
   ListWorkloadsResponse,
   PreviewResponse,
   ProcessingTarget,
@@ -158,4 +159,11 @@ export const apiClient = {
   // no createProduct() here, matching the read-only route this hits.
   listProducts: (limit = 50, offset = 0) =>
     request<ListProductsResponse>(`/api/v1/products?limit=${limit}&offset=${offset}`),
+
+  // Phase 3F: the Category domain's read API (see
+  // docs/architecture/category-processing.md). Same read-only shape as
+  // listProducts -- categories are written only by
+  // handlers::CategoryProcessHandler at job-execution time.
+  listCategories: (limit = 50, offset = 0) =>
+    request<ListCategoriesResponse>(`/api/v1/categories?limit=${limit}&offset=${offset}`),
 };

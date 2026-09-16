@@ -134,5 +134,23 @@ TEST_F(OcrIntegrationTest, ReconstructsAllHundredRowsFromTheBulkProductFixtureWi
   }
 }
 
+TEST_F(OcrIntegrationTest, ReconstructsAllHundredRowsFromTheBulkCategoryFixtureWithoutLosingAny) {
+  auto provider = std::make_shared<TesseractCliOcrProvider>(tesseract_path_);
+  extractors::ImageExtractor extractor(provider);
+  const std::string image_bytes = read_file(fixture_path("categories_bulk_100.png"));
+  ASSERT_FALSE(image_bytes.empty()) << "bulk category fixture image failed to load";
+
+  auto result = extractor.extract({.source_type = domain::InputSourceType::Image, .content = image_bytes});
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+
+  EXPECT_EQ(result->total_records, 100u);
+  EXPECT_EQ(result->records.size() + result->rejected_record_count, 100u);
+  EXPECT_GE(result->records.size(), 90u);
+  for (const auto& record : result->records) {
+    EXPECT_TRUE(record.field("Name").has_value());
+    EXPECT_TRUE(record.field("Slug").has_value());
+  }
+}
+
 }  // namespace
 }  // namespace flowforge::providers::test

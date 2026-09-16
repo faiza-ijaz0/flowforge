@@ -4,6 +4,7 @@
 
 #ifdef FLOWFORGE_WITH_POSTGRES
 #include "flowforge/persistence/postgres/connection_pool.hpp"
+#include "flowforge/persistence/postgres/postgres_category_repository.hpp"
 #include "flowforge/persistence/postgres/postgres_execution_repository.hpp"
 #include "flowforge/persistence/postgres/postgres_job_repository.hpp"
 #include "flowforge/persistence/postgres/postgres_product_repository.hpp"
@@ -29,6 +30,7 @@ Result<RepositoryBundle> create_repositories(const infra::AppConfig& config,
     bundle.executions = std::make_shared<InMemoryExecutionRepository>();
     bundle.workloads = std::make_shared<InMemoryWorkloadRepository>();
     bundle.products = std::make_shared<InMemoryProductRepository>();
+    bundle.categories = std::make_shared<InMemoryCategoryRepository>();
     bundle.check_database_health = [] { return true; };
     return bundle;
   }
@@ -62,6 +64,7 @@ Result<RepositoryBundle> create_repositories(const infra::AppConfig& config,
   bundle.executions = std::make_shared<postgres::PostgresExecutionRepository>(*pool, logger, metrics);
   bundle.workloads = std::make_shared<postgres::PostgresWorkloadRepository>(*pool, logger, metrics);
   bundle.products = std::make_shared<postgres::PostgresProductRepository>(*pool, logger, metrics);
+  bundle.categories = std::make_shared<postgres::PostgresCategoryRepository>(*pool, logger, metrics);
   bundle.check_database_health = [pool = *pool] { return pool->is_available(); };
   return bundle;
 #endif

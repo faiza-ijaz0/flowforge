@@ -214,16 +214,20 @@ TEST_F(InputProcessingServiceTest, PreviewRejectsCsvSourceEvenThoughProcessSuppo
   ASSERT_FALSE(result.has_value());
 }
 
-TEST_F(InputProcessingServiceTest, PreviewRejectsUnimplementedTargets) {
-  // Products (unlike here) IS supported for image preview as of Phase
-  // 3E -- see the Products-specific tests below. Categories has no
-  // mapping/handler yet, so it remains the genuinely unsupported case.
+TEST_F(InputProcessingServiceTest, PreviewRejectsUnimplementedSources) {
+  // As of Phase 3F, every ProcessingTarget (Users, Products, Categories)
+  // supports preview() for at least one source -- there is no longer a
+  // target-level "unimplemented" case (see ConfirmSupportsEveryDeclaredTarget
+  // below for the confirm()-side equivalent observation). What remains
+  // genuinely unimplemented is Text/Url as a *source*, for any target --
+  // preview()'s extractor selection never wires either one up.
   enable_image_extractor({word("Name", 20, 20, 40, 20, 96.0, 1, 1, 1)});
-  ProcessRequest request{.source_type = domain::InputSourceType::Image,
-                         .target = domain::ProcessingTarget::Categories,
-                         .payload = png_signature_bytes()};
-  auto result = service->preview(request);
-  ASSERT_FALSE(result.has_value());
+  for (auto source : {domain::InputSourceType::Text, domain::InputSourceType::Url}) {
+    ProcessRequest request{
+        .source_type = source, .target = domain::ProcessingTarget::Categories, .payload = "irrelevant"};
+    auto result = service->preview(request);
+    ASSERT_FALSE(result.has_value()) << "source " << domain::to_string(source) << " unexpectedly succeeded";
+  }
 }
 
 TEST_F(InputProcessingServiceTest, PreviewExtractsAndMapsRecordsWithoutCreatingAWorkload) {
@@ -334,17 +338,25 @@ TEST_F(InputProcessingServiceTest, ConfirmRevalidatesRecordsRatherThanTrustingTh
   EXPECT_EQ(result->workload.total_items(), 1u);
 }
 
-TEST_F(InputProcessingServiceTest, ConfirmRejectsUnimplementedTarget) {
-  // Categories has no product/user-style mapping/handler yet -- see
-  // docs/architecture/product-processing.md, "Deferred to a future
-  // phase". Users and Products are both now supported by confirm() (see
-  // the Products-specific tests below), so this test exercises the one
-  // remaining, genuinely unsupported target.
-  ConfirmRequest request{.target = domain::ProcessingTarget::Categories,
-                         .records = {user_record("Ali", "ali@example.com")}};
+TEST_F(InputProcessingServiceTest, ConfirmSupportsEveryDeclaredProcessingTarget) {
+  // As of Phase 3F, confirm() supports all three declared
+  // domain::ProcessingTarget values (Users, Products, Categories) -- there
+  // is no longer a "this target is unimplemented" case to exercise at
+  // this layer (contrast with Phase 3E, where this test asserted
+  // Categories was rejected). A genuinely malformed/unrecognized target
+  // string is instead rejected earlier, at the HTTP JSON-parsing boundary
+  // -- see apps/server/tests/process_routes_test.cpp,
+  // UnrecognizedTargetStringIsRejectedAtTheShapeLayer.
+  ConfirmRequest request{.target = domain::ProcessingTarget::Categories, .records = {[] {
+                                                                           domain::StructuredRecord record;
+                                                                           record.fields.emplace(
+                                                                               "name", "Electronics");
+                                                                           return record;
+                                                                         }()}};
   auto result = service->confirm(request);
-  ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().code(), ErrorCode::Validation);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_EQ(result->valid_records, 1u);
+  EXPECT_EQ(result->workload.type(), "category.process");
 }
 
 TEST_F(InputProcessingServiceTest, ConfirmRejectsEmptyRecordList) {

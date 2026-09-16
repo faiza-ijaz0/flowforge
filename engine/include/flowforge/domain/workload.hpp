@@ -57,17 +57,20 @@ enum class WorkloadStatus : std::uint8_t {
 enum class WorkloadItemOutcome : std::uint8_t { Queued, Running, Succeeded, Failed };
 
 /// Classifies a child job's current `JobStatus` for workload aggregation:
-///   - `Pending` / `Queued` / `Retrying`   -> Queued  (not currently executing; will run (again) soon)
-///   - `Running`                           -> Running (actively executing right now)
-///   - `Succeeded`                         -> Succeeded
-///   - `Cancelled` / `DeadLetter`          -> Failed  (both are terminal and unsuccessful)
+///   - `Pending` / `Queued` / `Retrying`     -> Queued  (not currently executing; will run (again) soon)
+///   - `Running`                             -> Running (actively executing right now)
+///   - `Succeeded`                           -> Succeeded
+///   - `Failed` / `Cancelled` / `DeadLetter` -> Failed  (all three are, in practice, permanent)
 ///
-/// `JobStatus::Failed` (an attempt that failed but may still retry) and
-/// `JobStatus::Retrying` are deliberately `Queued`, not `Failed`, here: a
-/// failed *attempt* is not terminal by itself (see `domain::is_terminal
-/// (JobStatus)`) -- `RetryDispatcher` may still retry it, so it is not yet
-/// a workload-level failure until the job reaches `Cancelled`/`DeadLetter`
-/// (retries exhausted) or `Succeeded`. See docs/architecture/
+/// `JobStatus::Retrying` is `Queued`, not `Failed`, here: `RetryDispatcher`
+/// polls specifically for `Retrying` jobs (see retry_dispatcher.cpp) and
+/// will re-submit it, so it is not yet a workload-level failure. By
+/// contrast, `JobStatus::Failed` -- set by `Job::record_execution_failure`
+/// for a handler's non-retryable error (see that method's doc comment) --
+/// is never picked up by `RetryDispatcher` (which only ever queries
+/// `Retrying`): nothing in this codebase moves a `Failed` job any further,
+/// so it must count as a workload-level failure immediately, not sit
+/// classified as "waiting for its turn" forever. See docs/architecture/
 /// workload-model.md, "Status derivation".
 [[nodiscard]] WorkloadItemOutcome classify_job_status_for_workload(JobStatus status) noexcept;
 

@@ -13,7 +13,7 @@ type Stage = "idle" | "extracting" | "preview-ready" | "confirming" | "submittin
 const TARGETS: { value: ProcessingTarget; label: string; available: boolean }[] = [
   { value: "users", label: "Users", available: true },
   { value: "products", label: "Products", available: true },
-  { value: "categories", label: "Categories", available: false },
+  { value: "categories", label: "Categories", available: true },
 ];
 
 const SOURCES: { value: InputSourceType; label: string; available: boolean }[] = [
@@ -25,10 +25,11 @@ const SOURCES: { value: InputSourceType; label: string; available: boolean }[] =
 ];
 
 /// Column definitions for the extraction-preview table, keyed by target
-/// (Phase 3E -- see docs/architecture/product-processing.md). `preview`
-/// records are a generic field-name -> string map
-/// (`@flowforge/shared`'s `StructuredRecord`); this is the one place the
-/// dashboard knows which fields each target's records carry.
+/// (Phase 3E; Categories added Phase 3F -- see
+/// docs/architecture/category-processing.md). `preview` records are a
+/// generic field-name -> string map (`@flowforge/shared`'s
+/// `StructuredRecord`); this is the one place the dashboard knows which
+/// fields each target's records carry.
 const PREVIEW_COLUMNS: Record<ProcessingTarget, { key: string; label: string }[]> = {
   users: [
     { key: "name", label: "Name" },
@@ -43,7 +44,11 @@ const PREVIEW_COLUMNS: Record<ProcessingTarget, { key: string; label: string }[]
     { key: "category", label: "Category" },
     { key: "stock_quantity", label: "Stock" },
   ],
-  categories: [],
+  categories: [
+    { key: "name", label: "Name" },
+    { key: "slug", label: "Slug" },
+    { key: "parent_slug", label: "Parent" },
+  ],
 };
 
 const TARGET_LABELS: Record<ProcessingTarget, string> = {
@@ -105,7 +110,8 @@ export function ProcessingUploadPanel() {
   // path").
   const isDirectSubmit = target === "users" && source === "csv";
   const isSupportedCombination =
-    (target === "users" || target === "products") && (source === "csv" || isImageFlow);
+    (target === "users" || target === "products" || target === "categories") &&
+    (source === "csv" || isImageFlow);
   const usesPreviewFlow = isSupportedCombination && !isDirectSubmit;
 
   // Object URLs must be revoked when replaced or on unmount -- otherwise
@@ -386,8 +392,9 @@ export function ProcessingUploadPanel() {
         <Card className="border-dashed">
           <div className="text-sm text-[var(--muted)]">
             {TARGETS.find((t) => t.value === target)?.label} via {SOURCES.find((s) => s.value === source)?.label} is
-            not implemented yet. Select <strong className="text-[var(--foreground)]">Users</strong> or{" "}
-            <strong className="text-[var(--foreground)]">Products</strong> with{" "}
+            not implemented yet. Select <strong className="text-[var(--foreground)]">Users</strong>,{" "}
+            <strong className="text-[var(--foreground)]">Products</strong>, or{" "}
+            <strong className="text-[var(--foreground)]">Categories</strong> with{" "}
             <strong className="text-[var(--foreground)]">CSV</strong>,{" "}
             <strong className="text-[var(--foreground)]">Image</strong>, or{" "}
             <strong className="text-[var(--foreground)]">Screenshot</strong> to process input today.

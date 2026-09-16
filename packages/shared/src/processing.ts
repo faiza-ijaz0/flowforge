@@ -102,3 +102,31 @@ export interface ListProductsResponse {
   limit: number;
   offset: number;
 }
+
+/**
+ * A persisted category row -- mirrors flowforge::domain::Category
+ * (Phase 3F, see docs/architecture/category-processing.md). Written only
+ * by handlers::CategoryProcessHandler at job-execution time; read via
+ * `GET /api/v1/categories`. `parent_slug` is a bare reference to another
+ * category's `slug` (or `null` for a top-level category) -- not a
+ * resolved/nested object, mirroring the persisted model's own choice
+ * (see category-processing.md, "Parent semantics").
+ */
+export interface Category {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  parent_slug: string | null;
+  job_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Response of GET /api/v1/categories -- bounded, offset-paginated. */
+export interface ListCategoriesResponse {
+  categories: Category[];
+  total: number;
+  limit: number;
+  offset: number;
+}

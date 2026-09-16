@@ -6,9 +6,11 @@
 #include "flowforge/engine/job_executor.hpp"
 #include "flowforge/extractors/image_extractor.hpp"
 #include "flowforge/handlers/builtin_handlers.hpp"
+#include "flowforge/handlers/category_process_handler.hpp"
 #include "flowforge/handlers/product_process_handler.hpp"
 #include "flowforge/providers/tesseract_ocr_provider.hpp"
 #include "http/cors.hpp"
+#include "http/routes/category_routes.hpp"
 #include "http/routes/health_routes.hpp"
 #include "http/routes/job_routes.hpp"
 #include "http/routes/process_routes.hpp"
@@ -46,6 +48,16 @@ Result<std::unique_ptr<App>> App::create(infra::AppConfig config) {
           std::make_shared<handlers::ProductProcessHandler>(repositories->products));
       !registered) {
     logger->critical("server", "failed to register product handler",
+                     {{.key = "error", .value = registered.error().message()}});
+    return std::unexpected(registered.error());
+  }
+  // Phase 3F: same registration convention as ProductProcessHandler above
+  // -- constructor-injected repository, registered separately from
+  // register_builtin_handlers.
+  if (auto registered = handler_registry->register_handler(
+          std::make_shared<handlers::CategoryProcessHandler>(repositories->categories));
+      !registered) {
+    logger->critical("server", "failed to register category handler",
                      {{.key = "error", .value = registered.error().message()}});
     return std::unexpected(registered.error());
   }
@@ -147,6 +159,7 @@ App::App(infra::AppConfig config, std::shared_ptr<infra::Logger> logger,
       execution_manager_(std::move(repositories.executions)),
       workload_repository_(std::move(repositories.workloads)),
       product_repository_(std::move(repositories.products)),
+      category_repository_(std::move(repositories.categories)),
       job_service_(std::make_shared<services::JobService>(job_repository_, clock_, logger_, metrics_)),
       // Phase 3A: WorkloadService reuses JobService/scheduler exactly like
       // POST /api/v1/jobs does for a single job -- it is constructed here,
@@ -206,6 +219,7 @@ void App::register_routes() {
   register_workload_routes(http_, workload_service_, logger_, metrics_);
   register_process_routes(http_, input_processing_service_);
   register_product_routes(http_, product_repository_);
+  register_category_routes(http_, category_repository_);
 
   http_.set_logger(
       [logger = logger_, metrics = metrics_](const httplib::Request& req, const httplib::Response& res) {

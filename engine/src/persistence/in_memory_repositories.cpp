@@ -194,6 +194,68 @@ Result<std::size_t> InMemoryProductRepository::count() const {
   return insertion_order_.size();
 }
 
+// --- InMemoryCategoryRepository -------------------------------------------
+
+Result<void> InMemoryCategoryRepository::upsert(const infra::JobId& job_id,
+                                                const domain::NormalizedCategoryRecord& record) {
+  std::lock_guard lock(mutex_);
+  const auto now = clock_->now();
+  auto existing_it = id_by_slug_.find(record.slug);
+  if (existing_it != id_by_slug_.end()) {
+    domain::Category& category = categories_by_id_.at(existing_it->second);
+    category.name = record.name;
+    category.description = record.description;
+    category.parent_slug = record.parent_slug;
+    category.job_id = job_id;
+    category.updated_at = now;
+    return {};
+  }
+
+  domain::Category category{.id = infra::CategoryId::generate(),
+                            .name = record.name,
+                            .slug = record.slug,
+                            .description = record.description,
+                            .parent_slug = record.parent_slug,
+                            .job_id = job_id,
+                            .created_at = now,
+                            .updated_at = now};
+  const std::string id = category.id.value();
+  id_by_slug_.emplace(record.slug, id);
+  categories_by_id_.emplace(id, std::move(category));
+  insertion_order_.push_back(id);
+  return {};
+}
+
+Result<std::optional<domain::Category>> InMemoryCategoryRepository::find_by_slug(
+    const std::string& slug) const {
+  std::lock_guard lock(mutex_);
+  auto it = id_by_slug_.find(slug);
+  if (it == id_by_slug_.end()) {
+    return std::optional<domain::Category>(std::nullopt);
+  }
+  return std::optional<domain::Category>(categories_by_id_.at(it->second));
+}
+
+Result<std::vector<domain::Category>> InMemoryCategoryRepository::list(std::size_t limit,
+                                                                       std::size_t offset) const {
+  std::lock_guard lock(mutex_);
+  std::vector<domain::Category> result;
+  if (offset >= insertion_order_.size()) {
+    return result;
+  }
+  const std::size_t end = std::min(insertion_order_.size(), offset + limit);
+  result.reserve(end - offset);
+  for (std::size_t i = offset; i < end; ++i) {
+    result.push_back(categories_by_id_.at(insertion_order_[i]));
+  }
+  return result;
+}
+
+Result<std::size_t> InMemoryCategoryRepository::count() const {
+  std::lock_guard lock(mutex_);
+  return insertion_order_.size();
+}
+
 // --- InMemoryWorkflowRepository ------------------------------------------
 
 Result<void> InMemoryWorkflowRepository::insert(const domain::Workflow& workflow) {

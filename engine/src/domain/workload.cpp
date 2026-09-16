@@ -61,13 +61,13 @@ WorkloadItemOutcome classify_job_status_for_workload(JobStatus status) noexcept 
       return WorkloadItemOutcome::Succeeded;
     case JobStatus::Cancelled:
     case JobStatus::DeadLetter:
+    case JobStatus::Failed:
       return WorkloadItemOutcome::Failed;
     case JobStatus::Running:
       return WorkloadItemOutcome::Running;
     case JobStatus::Pending:
     case JobStatus::Queued:
     case JobStatus::Retrying:
-    case JobStatus::Failed:
       return WorkloadItemOutcome::Queued;
   }
   return WorkloadItemOutcome::Queued;

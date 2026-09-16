@@ -73,23 +73,28 @@ TEST(ClassifyJobStatusForWorkloadTest, SucceededIsSucceeded) {
   EXPECT_EQ(classify_job_status_for_workload(JobStatus::Succeeded), WorkloadItemOutcome::Succeeded);
 }
 
-TEST(ClassifyJobStatusForWorkloadTest, CancelledAndDeadLetterAreFailed) {
+TEST(ClassifyJobStatusForWorkloadTest, CancelledDeadLetterAndFailedAreAllFailed) {
   EXPECT_EQ(classify_job_status_for_workload(JobStatus::Cancelled), WorkloadItemOutcome::Failed);
   EXPECT_EQ(classify_job_status_for_workload(JobStatus::DeadLetter), WorkloadItemOutcome::Failed);
+  // JobStatus::Failed (Job::record_execution_failure -- a handler's
+  // non-retryable error) is never re-queried by RetryDispatcher (which
+  // only ever polls for JobStatus::Retrying), so nothing in this codebase
+  // moves a Failed job any further -- it must count as a workload-level
+  // failure immediately. See classify_job_status_for_workload's doc
+  // comment.
+  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Failed), WorkloadItemOutcome::Failed);
 }
 
 TEST(ClassifyJobStatusForWorkloadTest, RunningIsRunning) {
   EXPECT_EQ(classify_job_status_for_workload(JobStatus::Running), WorkloadItemOutcome::Running);
 }
 
-TEST(ClassifyJobStatusForWorkloadTest, WaitingAndRetryableStatesAreQueued) {
+TEST(ClassifyJobStatusForWorkloadTest, WaitingAndRetryingStatesAreQueued) {
   EXPECT_EQ(classify_job_status_for_workload(JobStatus::Pending), WorkloadItemOutcome::Queued);
   EXPECT_EQ(classify_job_status_for_workload(JobStatus::Queued), WorkloadItemOutcome::Queued);
+  // JobStatus::Retrying is Queued, not Failed: RetryDispatcher will
+  // re-submit it -- see classify_job_status_for_workload's doc comment.
   EXPECT_EQ(classify_job_status_for_workload(JobStatus::Retrying), WorkloadItemOutcome::Queued);
-  // A failed *attempt* is not yet a workload-level failure -- it may still
-  // be retried (see classify_job_status_for_workload's doc comment), so it
-  // is grouped with "waiting for its turn" rather than "Failed".
-  EXPECT_EQ(classify_job_status_for_workload(JobStatus::Failed), WorkloadItemOutcome::Queued);
 }
 
 TEST(WorkloadStatusStringTest, RoundTripsThroughAllValues) {

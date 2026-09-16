@@ -3,8 +3,10 @@
 #include <cstdio>
 #include <unordered_set>
 
+#include "flowforge/domain/category_record.hpp"
 #include "flowforge/domain/product_record.hpp"
 #include "flowforge/domain/user_record.hpp"
+#include "flowforge/services/category_mapping.hpp"
 #include "flowforge/services/product_mapping.hpp"
 #include "flowforge/services/user_import.hpp"
 #include "flowforge/services/user_mapping.hpp"
@@ -94,6 +96,19 @@ domain::StructuredRecord product_record_to_structured(const domain::NormalizedPr
   return structured;
 }
 
+domain::StructuredRecord category_record_to_structured(const domain::NormalizedCategoryRecord& record) {
+  domain::StructuredRecord structured;
+  structured.fields.emplace("name", record.name);
+  structured.fields.emplace("slug", record.slug);
+  if (record.description) {
+    structured.fields.emplace("description", *record.description);
+  }
+  if (record.parent_slug) {
+    structured.fields.emplace("parent_slug", *record.parent_slug);
+  }
+  return structured;
+}
+
 /// The generic shape `map_structured_records_to_users`/
 /// `map_structured_records_to_products` both reduce to once their
 /// target-specific `NormalizedXRecord` is converted to a
@@ -124,6 +139,18 @@ struct GenericMappedRecords {
     result.valid_records.reserve(mapped.valid_records.size());
     for (auto& record : mapped.valid_records) {
       result.valid_records.push_back(product_record_to_structured(record));
+    }
+    for (auto& rejection : mapped.rejected_records) {
+      result.rejected_records.push_back({.index = rejection.index, .reason = std::move(rejection.reason)});
+    }
+    result.rejected_records_truncated = mapped.rejected_records_truncated;
+    return result;
+  }
+  if (target == domain::ProcessingTarget::Categories) {
+    auto mapped = map_structured_records_to_categories(records);
+    result.valid_records.reserve(mapped.valid_records.size());
+    for (auto& record : mapped.valid_records) {
+      result.valid_records.push_back(category_record_to_structured(record));
     }
     for (auto& rejection : mapped.rejected_records) {
       result.rejected_records.push_back({.index = rejection.index, .reason = std::move(rejection.reason)});
@@ -168,6 +195,18 @@ struct GenericMappedRecords {
     }
     return domain::serialize_product_record_as_job_payload(*normalized);
   }
+  if (target == domain::ProcessingTarget::Categories) {
+    const auto name = record.field("name");
+    if (!name) {
+      return std::unexpected(make_error(ErrorCode::Validation, "'name' is required"));
+    }
+    auto normalized = domain::validate_and_normalize_category_record(
+        *name, record.field("slug"), record.field("description"), record.field("parent_slug"));
+    if (!normalized) {
+      return std::unexpected(normalized.error());
+    }
+    return domain::serialize_category_record_as_job_payload(*normalized);
+  }
   return std::unexpected(make_error(
       ErrorCode::Validation, "target '" + std::string(domain::to_string(target)) + "' is not supported"));
 }
@@ -208,7 +247,8 @@ Result<PreviewResult> InputProcessingService::preview(const ProcessRequest& requ
     if (is_image_source(request.source_type) && image_extractor_) {
       extractor = image_extractor_.get();
     }
-  } else if (request.target == domain::ProcessingTarget::Products) {
+  } else if (request.target == domain::ProcessingTarget::Products ||
+             request.target == domain::ProcessingTarget::Categories) {
     if (request.source_type == domain::InputSourceType::Csv) {
       extractor = &csv_extractor_;
     } else if (is_image_source(request.source_type) && image_extractor_) {
@@ -291,7 +331,8 @@ Result<PreviewResult> InputProcessingService::preview(const ProcessRequest& requ
 
 Result<ProcessResult> InputProcessingService::confirm(const ConfirmRequest& request) {
   if (request.target != domain::ProcessingTarget::Users &&
-      request.target != domain::ProcessingTarget::Products) {
+      request.target != domain::ProcessingTarget::Products &&
+      request.target != domain::ProcessingTarget::Categories) {
     return std::unexpected(
         make_error(ErrorCode::Validation,
                    "target '" + std::string(domain::to_string(request.target)) + "' is not supported"));

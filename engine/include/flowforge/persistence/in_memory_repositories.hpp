@@ -6,6 +6,7 @@
 
 #include "flowforge/engine/execution_manager.hpp"
 #include "flowforge/infra/clock.hpp"
+#include "flowforge/persistence/category_repository.hpp"
 #include "flowforge/persistence/job_repository.hpp"
 #include "flowforge/persistence/product_repository.hpp"
 #include "flowforge/persistence/worker_repository.hpp"
@@ -76,6 +77,29 @@ class InMemoryProductRepository final : public IProductRepository {
   mutable std::mutex mutex_;
   std::map<std::string, domain::Product> products_by_id_;
   std::map<std::string, std::string> id_by_sku_;
+  std::vector<std::string> insertion_order_;
+};
+
+/// Thread-safe, in-process implementation of `ICategoryRepository` --
+/// mirrors `InMemoryProductRepository`'s conventions exactly (id/
+/// timestamp generation owned here, keyed by `slug` the same way that
+/// class is keyed by `sku`).
+class InMemoryCategoryRepository final : public ICategoryRepository {
+ public:
+  explicit InMemoryCategoryRepository(std::shared_ptr<infra::Clock> clock = infra::make_system_clock())
+      : clock_(std::move(clock)) {}
+
+  Result<void> upsert(const infra::JobId& job_id, const domain::NormalizedCategoryRecord& record) override;
+  [[nodiscard]] Result<std::optional<domain::Category>> find_by_slug(const std::string& slug) const override;
+  [[nodiscard]] Result<std::vector<domain::Category>> list(std::size_t limit,
+                                                           std::size_t offset) const override;
+  [[nodiscard]] Result<std::size_t> count() const override;
+
+ private:
+  std::shared_ptr<infra::Clock> clock_;
+  mutable std::mutex mutex_;
+  std::map<std::string, domain::Category> categories_by_id_;
+  std::map<std::string, std::string> id_by_slug_;
   std::vector<std::string> insertion_order_;
 };
 

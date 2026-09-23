@@ -113,6 +113,12 @@ class WorkloadService {
   [[nodiscard]] Result<std::vector<domain::Workload>> list_workloads(std::size_t limit,
                                                                      std::size_t offset) const;
 
+  /// Total number of workloads, independent of any list_workloads() page --
+  /// mirrors `JobService::count_jobs()` (Phase 3G), so `GET
+  /// /api/v1/workloads` can report a `total` the same way `/api/v1/
+  /// products`/`/api/v1/categories` already do.
+  [[nodiscard]] Result<std::size_t> count_workloads() const;
+
   /// One bounded, offset-paginated page of `workload_id`'s child jobs (see
   /// `WorkloadItemsPage`). Returns `ErrorCode::NotFound` if the workload
   /// itself does not exist. `limit` is clamped the same way

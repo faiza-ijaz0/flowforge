@@ -23,6 +23,7 @@ class PostgresWorkloadRepository final : public IWorkloadRepository {
   [[nodiscard]] Result<domain::Workload> find_by_id(const infra::WorkloadId& id) const override;
   [[nodiscard]] Result<std::vector<domain::Workload>> list(std::size_t limit,
                                                            std::size_t offset) const override;
+  [[nodiscard]] Result<std::size_t> count() const override;
 
  private:
   std::shared_ptr<PgConnectionPool> pool_;

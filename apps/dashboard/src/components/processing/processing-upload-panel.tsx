@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 
 import type { InputSourceType, PreviewResponse, ProcessingTarget, ProcessResponse } from "@flowforge/shared";
@@ -237,6 +238,30 @@ export function ProcessingUploadPanel() {
         </Card>
 
         <WorkloadProgressPanel workloadId={result.id} initialWorkload={result} />
+
+        {/* Confirmation must lead somewhere real, not just "success" -- see
+            docs/architecture/phase-3g-audit.md §7 (Step 7). */}
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href={`/workloads/${result.id}`}
+            className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
+          >
+            View Workload
+          </Link>
+          <Link
+            href="/jobs"
+            className="rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium hover:bg-white/5"
+          >
+            View Jobs
+          </Link>
+          <button
+            type="button"
+            onClick={reset}
+            className="rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium hover:bg-white/5"
+          >
+            Return to Processing Center
+          </button>
+        </div>
       </div>
     );
   }

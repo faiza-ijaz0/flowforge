@@ -165,6 +165,10 @@ Result<std::vector<domain::Workload>> WorkloadService::list_workloads(std::size_
   return result;
 }
 
+Result<std::size_t> WorkloadService::count_workloads() const {
+  return workload_repository_->count();
+}
+
 Result<WorkloadItemsPage> WorkloadService::list_items(const std::string& workload_id, std::size_t limit,
                                                       std::size_t offset) const {
   if (workload_id.empty()) {
@@ -199,6 +203,8 @@ Result<domain::Workload> WorkloadService::with_progress(domain::Workload workloa
   std::size_t running = 0;
   std::size_t succeeded = 0;
   std::size_t failed = 0;
+  std::size_t retrying = 0;
+  std::size_t dead_letter = 0;
   for (const auto& job : *jobs) {
     switch (domain::classify_job_status_for_workload(job.status())) {
       case domain::WorkloadItemOutcome::Queued:
@@ -214,8 +220,17 @@ Result<domain::Workload> WorkloadService::with_progress(domain::Workload workloa
         ++failed;
         break;
     }
+    // Sub-counts within the Queued/Failed buckets above (Phase 3G) -- see
+    // Workload::retrying_items()/dead_letter_items() doc comments for why
+    // these don't change classify_job_status_for_workload's four-bucket
+    // status-derivation classification.
+    if (job.status() == domain::JobStatus::Retrying) {
+      ++retrying;
+    } else if (job.status() == domain::JobStatus::DeadLetter) {
+      ++dead_letter;
+    }
   }
-  workload.apply_progress(queued, running, succeeded, failed);
+  workload.apply_progress(queued, running, succeeded, failed, retrying, dead_letter);
   return workload;
 }
 

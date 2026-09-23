@@ -40,6 +40,12 @@ class IWorkloadRepository {
 
   [[nodiscard]] virtual Result<std::vector<domain::Workload>> list(std::size_t limit,
                                                                    std::size_t offset) const = 0;
+
+  /// Total number of workloads, independent of any `list()` page -- mirrors
+  /// `IJobRepository::count()` (Phase 3G), added so `GET /api/v1/workloads`
+  /// can report a `total` the same way `/api/v1/products`/`/api/v1/
+  /// categories` already do.
+  [[nodiscard]] virtual Result<std::size_t> count() const = 0;
 };
 
 }  // namespace flowforge::persistence

@@ -154,6 +154,10 @@ TEST_F(WorkloadServiceTest, GetWorkloadComputesProgressFromChildJobStatuses) {
   EXPECT_EQ(fetched->running_items(), 1u);
   EXPECT_EQ(fetched->completed_items(), 1u);
   EXPECT_EQ(fetched->failed_items(), 1u);
+  // Phase 3G: dead_letter_items() is a sub-count of failed_items() -- the
+  // one failed job here is specifically DeadLetter, not just Failed.
+  EXPECT_EQ(fetched->dead_letter_items(), 1u);
+  EXPECT_EQ(fetched->retrying_items(), 0u);
   EXPECT_EQ(fetched->status(), domain::WorkloadStatus::Running);  // still_running is not yet terminal.
 
   still_running.transition_to(domain::JobStatus::Succeeded, std::chrono::system_clock::now());
@@ -165,6 +169,35 @@ TEST_F(WorkloadServiceTest, GetWorkloadComputesProgressFromChildJobStatuses) {
   EXPECT_EQ(fetched_again->completed_items(), 2u);
   EXPECT_EQ(fetched_again->failed_items(), 1u);
   EXPECT_EQ(fetched_again->status(), domain::WorkloadStatus::Failed);
+}
+
+// Phase 3G: closes the gap docs/architecture/phase-3g-audit.md §3.2
+// identified -- Retrying is folded into the Queued bucket for status
+// derivation (correctly -- see classify_job_status_for_workload's doc
+// comment), but that used to make a job backing off after a failed attempt
+// indistinguishable, at the workload level, from one that never ran yet.
+// retrying_items() is the additive sub-count that fixes that.
+TEST_F(WorkloadServiceTest, GetWorkloadDistinguishesRetryingFromNeverRunViaSubCount) {
+  domain::Workload workload(infra::WorkloadId::generate(), "user.process", 2,
+                            std::chrono::system_clock::now());
+  ASSERT_TRUE(workload_repository->insert(workload).has_value());
+
+  domain::Job never_run(infra::JobId::generate(), "default", "{}", domain::RetryPolicy{},
+                        std::chrono::system_clock::now(), 0, "user.process", workload.id());
+  domain::Job retrying(infra::JobId::generate(), "default", "{}", domain::RetryPolicy{},
+                       std::chrono::system_clock::now(), 0, "user.process", workload.id());
+  retrying.transition_to(domain::JobStatus::Retrying, std::chrono::system_clock::now());
+
+  ASSERT_TRUE(job_repository->insert(never_run).has_value());
+  ASSERT_TRUE(job_repository->insert(retrying).has_value());
+
+  auto fetched = service->get_workload(workload.id().value());
+  ASSERT_TRUE(fetched.has_value());
+  // Both count as Queued at the four-bucket classification level...
+  EXPECT_EQ(fetched->queued_items(), 2u);
+  // ...but the sub-count distinguishes the one that's actually retrying.
+  EXPECT_EQ(fetched->retrying_items(), 1u);
+  EXPECT_EQ(fetched->dead_letter_items(), 0u);
 }
 
 TEST_F(WorkloadServiceTest, GetWorkloadReturnsNotFoundForUnknownId) {

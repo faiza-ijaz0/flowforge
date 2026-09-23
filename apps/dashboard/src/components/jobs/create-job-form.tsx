@@ -7,7 +7,7 @@ import { apiClient, ApiError } from "@/lib/api-client";
 
 const JOB_TYPES = ["", "echo", "delay", "transform"] as const;
 
-export function CreateJobForm() {
+export function CreateJobForm({ onCreated }: { onCreated?: () => void }) {
   const router = useRouter();
   const [queueName, setQueueName] = useState("default");
   const [jobType, setJobType] = useState<string>("");
@@ -40,6 +40,7 @@ export function CreateJobForm() {
         setInfo(`Job created but not scheduled: ${created.scheduling.reason ?? "unknown reason"}`);
       }
       router.refresh();
+      onCreated?.();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to create job");
     } finally {

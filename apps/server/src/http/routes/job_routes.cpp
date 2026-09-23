@@ -102,12 +102,19 @@ void register_job_routes(httplib::Server& server, const std::shared_ptr<services
       write_error(res, jobs.error());
       return;
     }
+    auto total = job_service->count_jobs();
+    if (!total) {
+      write_error(res, total.error());
+      return;
+    }
 
     nlohmann::json items = nlohmann::json::array();
     for (const auto& job : *jobs) {
       items.push_back(to_json(job));
     }
-    res.set_content(nlohmann::json{{"jobs", items}}.dump(), "application/json");
+    res.set_content(
+        nlohmann::json{{"jobs", items}, {"total", *total}, {"limit", limit}, {"offset", offset}}.dump(),
+        "application/json");
   });
 
   server.Get("/api/v1/jobs/:id", [job_service](const httplib::Request& req, httplib::Response& res) {

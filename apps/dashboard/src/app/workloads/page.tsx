@@ -3,32 +3,22 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import type { Product } from "@flowforge/shared";
+import type { Workload } from "@flowforge/shared";
 
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { apiClient, ApiError } from "@/lib/api-client";
 
 const PAGE_SIZE = 25;
 
-function formatPrice(price: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(price);
-  } catch {
-    // An unrecognized currency code (shouldn't happen -- the backend
-    // validates it -- but Intl.NumberFormat throws on a truly malformed
-    // one) falls back to a plain, still-honest rendering rather than
-    // crashing the page.
-    return `${price.toFixed(2)} ${currency}`;
-  }
-}
-
-export default function ProductsPage() {
-  const [products, setProducts] = useState<Product[]>([]);
+export default function WorkloadsPage() {
+  const [workloads, setWorkloads] = useState<Workload[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Bumped to re-run the fetch effect on "Retry" without changing offset.
   const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
@@ -36,15 +26,15 @@ export default function ProductsPage() {
     setLoading(true);
     setError(null);
     apiClient
-      .listProducts(PAGE_SIZE, offset)
+      .listWorkloads(PAGE_SIZE, offset)
       .then((result) => {
         if (cancelled) return;
-        setProducts(result.products);
+        setWorkloads(result.workloads);
         setTotal(result.total);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof ApiError ? err.message : "Failed to load products");
+        setError(err instanceof ApiError ? err.message : "Failed to load workloads");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -60,8 +50,8 @@ export default function ProductsPage() {
   return (
     <div>
       <PageHeader
-        title="Products"
-        description="Real, persisted product records. Every row here was written by handlers::ProductProcessHandler when its product.process job executed -- see docs/architecture/product-processing.md. Import more via the Processing Center."
+        title="Workloads"
+        description="Every workload created from the Processing Center or a user import -- a logical grouping of jobs submitted as one unit. Progress, retry, and dead-letter counts are computed live from each workload's child jobs, never cached."
         action={
           <Link
             href="/processing"
@@ -91,67 +81,83 @@ export default function ProductsPage() {
         <Card>
           <div className="flex items-center gap-3 text-sm text-[var(--muted)]">
             <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-[var(--border)] border-t-[var(--accent)]" />
-            Loading products…
+            Loading workloads…
           </div>
         </Card>
       )}
 
-      {!loading && !error && products.length === 0 && (
+      {!loading && !error && workloads.length === 0 && (
         <Card>
           <div className="text-sm text-[var(--muted)]">
-            No products yet.{" "}
+            No workloads yet.{" "}
             <Link href="/processing" className="text-[var(--accent)] hover:underline">
-              Import a CSV or image
+              Upload a CSV or image
             </Link>{" "}
-            to get started.
+            in the Processing Center to create one.
           </div>
         </Card>
       )}
 
-      {!loading && !error && products.length > 0 && (
+      {!loading && !error && workloads.length > 0 && (
         <>
           <Card className="p-0">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
-                    <th className="px-4 py-3 font-medium">SKU</th>
-                    <th className="px-4 py-3 font-medium">Name</th>
-                    <th className="px-4 py-3 font-medium">Price</th>
-                    <th className="px-4 py-3 font-medium">Category</th>
-                    <th className="px-4 py-3 font-medium">Stock</th>
-                    <th className="px-4 py-3 font-medium">Job</th>
-                    <th className="px-4 py-3 font-medium">Updated</th>
+                    <th className="px-4 py-3 font-medium">ID</th>
+                    <th className="px-4 py-3 font-medium">Type</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Progress</th>
+                    <th className="px-4 py-3 font-medium">Retrying</th>
+                    <th className="px-4 py-3 font-medium">Dead-letter</th>
+                    <th className="px-4 py-3 font-medium">Created</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {products.map((product) => (
-                    <tr key={product.id} className="border-b border-[var(--border)] last:border-0 hover:bg-white/5">
-                      <td className="px-4 py-3 font-mono text-xs">{product.sku}</td>
-                      <td className="px-4 py-3">{product.name}</td>
-                      <td className="px-4 py-3 text-[var(--muted)]">
-                        {formatPrice(product.price, product.currency)}
-                      </td>
-                      <td className="px-4 py-3 text-[var(--muted)]">{product.category ?? "—"}</td>
-                      <td className="px-4 py-3 text-[var(--muted)]">{product.stock_quantity}</td>
-                      <td className="px-4 py-3">
-                        {product.job_id ? (
+                  {workloads.map((workload) => {
+                    const decided = workload.completed_items + workload.failed_items;
+                    return (
+                      <tr
+                        key={workload.id}
+                        className="border-b border-[var(--border)] last:border-0 hover:bg-white/5"
+                      >
+                        <td className="px-4 py-3">
                           <Link
-                            href={`/jobs/${product.job_id}`}
+                            href={`/workloads/${workload.id}`}
                             className="font-mono text-xs text-[var(--accent)]"
-                            title={product.job_id}
+                            title={workload.id}
                           >
-                            {product.job_id.slice(0, 8)}…
+                            {workload.id.slice(0, 8)}…
                           </Link>
-                        ) : (
-                          <span className="text-[var(--muted)]">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-[var(--muted)]">
-                        {new Date(product.updated_at).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="px-4 py-3">{workload.type}</td>
+                        <td className="px-4 py-3">
+                          <StatusBadge status={workload.status} />
+                        </td>
+                        <td className="px-4 py-3 text-[var(--muted)]">
+                          {decided} / {workload.total_items}
+                        </td>
+                        <td className="px-4 py-3 text-[var(--muted)]">
+                          {workload.retrying_items > 0 ? (
+                            <span className="text-amber-300">{workload.retrying_items}</span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-[var(--muted)]">
+                          {workload.dead_letter_items > 0 ? (
+                            <span className="text-red-400">{workload.dead_letter_items}</span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-[var(--muted)]">
+                          {new Date(workload.created_at).toLocaleString()}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

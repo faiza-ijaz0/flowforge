@@ -89,6 +89,11 @@ Result<std::vector<domain::Job>> InMemoryJobRepository::list_by_workload_id(
   return result;
 }
 
+Result<std::size_t> InMemoryJobRepository::count() const {
+  std::lock_guard lock(mutex_);
+  return insertion_order_.size();
+}
+
 // --- InMemoryWorkloadRepository -------------------------------------------
 
 Result<void> InMemoryWorkloadRepository::insert(const domain::Workload& workload) {
@@ -125,6 +130,11 @@ Result<std::vector<domain::Workload>> InMemoryWorkloadRepository::list(std::size
     result.push_back(workloads_by_id_.at(insertion_order_[i]));
   }
   return result;
+}
+
+Result<std::size_t> InMemoryWorkloadRepository::count() const {
+  std::lock_guard lock(mutex_);
+  return insertion_order_.size();
 }
 
 // --- InMemoryProductRepository -------------------------------------------

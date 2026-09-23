@@ -26,6 +26,9 @@ nlohmann::json to_json(const domain::Job& job) {
   };
   const auto& last_error = job.last_error();
   result["last_error"] = last_error.has_value() ? nlohmann::json(*last_error) : nlohmann::json(nullptr);
+  const auto& workload_id = job.workload_id();
+  result["workload_id"] =
+      workload_id.has_value() ? nlohmann::json(workload_id->value()) : nlohmann::json(nullptr);
   return result;
 }
 

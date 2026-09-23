@@ -199,6 +199,8 @@ TEST_F(HttpServerTest, CreateJobThenFetchIt) {
   EXPECT_EQ(created_json.at("status"), "pending");
   // A freshly created job has made zero attempts yet.
   EXPECT_EQ(created_json.at("attempt_count"), 0);
+  // Not created as part of a workload -- Phase 3G's workload_id exposure.
+  EXPECT_TRUE(created_json.at("workload_id").is_null());
 
   auto get_res = client.Get("/api/v1/jobs/" + id);
   ASSERT_TRUE(get_res);
@@ -342,6 +344,11 @@ TEST_F(HttpServerTest, ListJobsReturnsCreatedJobs) {
   ASSERT_TRUE(res);
   auto body = nlohmann::json::parse(res->body);
   EXPECT_GE(body.at("jobs").size(), 2u);
+  // Phase 3G: total/limit/offset let the dashboard render real pagination
+  // controls (see docs/architecture/phase-3g-audit.md §2.3).
+  EXPECT_GE(body.at("total").get<std::size_t>(), 2u);
+  EXPECT_EQ(body.at("limit"), 50);
+  EXPECT_EQ(body.at("offset"), 0);
 }
 
 TEST_F(HttpServerTest, ListWorkflowsReturnsEmptyArray) {

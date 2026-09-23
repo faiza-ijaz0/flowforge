@@ -97,6 +97,10 @@ Result<std::vector<domain::Job>> JobService::list_jobs(std::size_t limit, std::s
   return repository_->list(limit, offset);
 }
 
+Result<std::size_t> JobService::count_jobs() const {
+  return repository_->count();
+}
+
 Result<domain::Job> JobService::cancel_job(const std::string& id) {
   auto found = repository_->find_by_id(infra::JobId{id});
   if (!found) {

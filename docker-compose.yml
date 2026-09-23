@@ -35,6 +35,12 @@ services:
       FLOWFORGE_STRUCTURED_LOGGING: "true"
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/ready"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
 
   # One-shot migration runner: `docker compose run --rm migrate`
   # Not started by `docker compose up` -- migrations are an explicit,
@@ -64,6 +70,12 @@ services:
       NEXT_PUBLIC_API_URL: http://localhost:8080
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
 
 volumes:
   flowforge_postgres_data:

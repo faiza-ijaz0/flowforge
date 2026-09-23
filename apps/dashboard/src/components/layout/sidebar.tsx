@@ -5,16 +5,18 @@ import { usePathname } from "next/navigation";
 
 const NAV_ITEMS = [
   { href: "/", label: "Overview" },
+  { href: "/processing", label: "Processing Center" },
+  { href: "/workloads", label: "Workloads" },
+  { href: "/jobs", label: "Jobs" },
   { href: "/users", label: "Users" },
   { href: "/products", label: "Products" },
   { href: "/categories", label: "Categories" },
-  { href: "/processing", label: "Processing" },
-  { href: "/jobs", label: "Jobs" },
   { href: "/workflows", label: "Workflows" },
   { href: "/workers", label: "Workers" },
   { href: "/queues", label: "Queues" },
-  { href: "/logs", label: "Logs" },
+  { href: "/health", label: "System health" },
   { href: "/metrics", label: "Metrics" },
+  { href: "/logs", label: "Logs" },
   { href: "/settings", label: "Settings" },
 ] as const;
 
@@ -47,7 +49,7 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="px-2 text-xs text-[var(--muted)]">v0.1.0 &middot; Phase 1 foundation</div>
+      <div className="px-2 text-xs text-[var(--muted)]">v0.1.0</div>
     </aside>
   );
 }

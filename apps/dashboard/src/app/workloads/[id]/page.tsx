@@ -22,8 +22,8 @@ export default async function WorkloadDetailPage({ params }: { params: Promise<{
 
   return (
     <div>
-      <Link href="/users" className="text-sm text-[var(--accent)]">
-        &larr; Back to users
+      <Link href="/workloads" className="text-sm text-[var(--accent)]">
+        &larr; Back to workloads
       </Link>
 
       <PageHeader title="Workload" description={workload.id} />

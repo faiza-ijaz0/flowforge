@@ -342,4 +342,23 @@ Result<std::vector<domain::Job>> PostgresJobRepository::list_by_workload_id(
   }
 }
 
+Result<std::size_t> PostgresJobRepository::count() const {
+  try {
+    auto conn = pool_->acquire();
+    if (!conn) {
+      return std::unexpected(conn.error());
+    }
+    pqxx::work txn(**conn);
+    auto result = txn.exec("SELECT count(*) FROM jobs");
+    txn.commit();
+    return result[0][0].as<std::size_t>();
+  } catch (const std::exception& e) {
+    logger_->error(kComponent, "count failed", {{.key = "error", .value = e.what()}});
+    if (metrics_) {
+      metrics_->increment_counter("flowforge_db_errors_total");
+    }
+    return std::unexpected(map_exception(e, "job_repository.count"));
+  }
+}
+
 }  // namespace flowforge::persistence::postgres

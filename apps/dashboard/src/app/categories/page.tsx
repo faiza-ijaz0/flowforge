@@ -17,6 +17,7 @@ export default function CategoriesPage() {
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -39,7 +40,7 @@ export default function CategoriesPage() {
     return () => {
       cancelled = true;
     };
-  }, [offset]);
+  }, [offset, retryToken]);
 
   const rangeStart = total === 0 ? 0 : offset + 1;
   const rangeEnd = Math.min(offset + PAGE_SIZE, total);
@@ -61,7 +62,16 @@ export default function CategoriesPage() {
 
       {error && (
         <Card className="mb-4 border-red-500/30">
-          <div className="text-sm text-red-400">{error}</div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-sm text-red-400">{error}</div>
+            <button
+              type="button"
+              onClick={() => setRetryToken((t) => t + 1)}
+              className="shrink-0 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium hover:bg-white/5"
+            >
+              Retry
+            </button>
+          </div>
         </Card>
       )}
 
@@ -97,7 +107,7 @@ export default function CategoriesPage() {
                     <th className="px-4 py-3 font-medium">Slug</th>
                     <th className="px-4 py-3 font-medium">Parent</th>
                     <th className="px-4 py-3 font-medium">Description</th>
-                    <th className="px-4 py-3 font-medium">Workload</th>
+                    <th className="px-4 py-3 font-medium">Job</th>
                     <th className="px-4 py-3 font-medium">Updated</th>
                   </tr>
                 </thead>
@@ -120,9 +130,13 @@ export default function CategoriesPage() {
                       </td>
                       <td className="px-4 py-3">
                         {category.job_id ? (
-                          <span className="font-mono text-xs text-[var(--muted)]" title={category.job_id}>
+                          <Link
+                            href={`/jobs/${category.job_id}`}
+                            className="font-mono text-xs text-[var(--accent)]"
+                            title={category.job_id}
+                          >
                             {category.job_id.slice(0, 8)}…
-                          </span>
+                          </Link>
                         ) : (
                           <span className="text-[var(--muted)]">—</span>
                         )}

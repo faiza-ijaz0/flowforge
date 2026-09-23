@@ -4,7 +4,11 @@ Base path: `/api/v1`. All request/response bodies are JSON. There is no authenti
 `docs/architecture/overview.md` §9) — every endpoint below is open.
 
 This document only lists endpoints that actually exist and are wired to `apps/server`. For the full
-list of endpoints planned but not yet implemented, see the README's Roadmap section.
+list of endpoints planned but not yet implemented, see the README's Roadmap section. Products,
+Categories, and the Processing Center's upload/preview/confirm endpoints are documented in their
+own architecture docs rather than duplicated here in full request/response detail — see
+`docs/architecture/product-processing.md`, `docs/architecture/category-processing.md`, and
+`docs/architecture/input-processing.md`.
 
 ## Health and observability
 
@@ -15,9 +19,21 @@ Liveness check. Always returns `200` if the process is running.
 ```
 
 ### `GET /ready`
-Readiness check. Currently identical to `/health` (no external dependency to check yet).
+Readiness check: real, cheap, non-blocking checks against PostgreSQL, the scheduler, the worker
+pool, and the retry dispatcher (see `docs/architecture/execution-model.md` §20). Returns `503`
+(never a lying `200`) the moment any one of them is unavailable.
 ```json
-{ "status": "ok", "environment": "development", "uptime_seconds": 42 }
+{
+  "status": "ok",
+  "environment": "development",
+  "uptime_seconds": 42,
+  "checks": {
+    "database": "ok",
+    "scheduler": "ok",
+    "worker_pool": "ok",
+    "retry_dispatcher": "ok"
+  }
+}
 ```
 
 ### `GET /metrics`
@@ -54,11 +70,18 @@ created job (see shape below). Validation failures return `400` with
 ### `GET /api/v1/jobs?limit=50&offset=0`
 Lists jobs in creation order. `limit` defaults to 50, capped at 500; `offset` defaults to 0.
 ```json
-{ "jobs": [ /* Job[] */ ] }
+{ "jobs": [ /* Job[] */ ], "total": 344, "limit": 50, "offset": 0 }
 ```
 
 ### `GET /api/v1/jobs/{id}`
 Fetches a single job. `404` (`not_found`) if the id doesn't exist.
+
+### `GET /api/v1/jobs/{id}/attempts`
+Real execution attempt history for one job (one row per attempt — worker, outcome, duration,
+error), backed by `job_attempts`.
+```json
+{ "attempts": [ /* Attempt[] */ ] }
+```
 
 ### `POST /api/v1/jobs/{id}/cancel`
 Transitions a job to `cancelled`. `404` if unknown, `409` (`conflict`) if the job is already in a
@@ -69,21 +92,77 @@ terminal state (`succeeded`, `cancelled`, `dead_letter`).
 {
   "id": "3f9a7e2a-...-uuid",
   "queue_name": "emails",
+  "job_type": "user.process",
   "payload": { "to": "a@example.com" },
   "priority": 0,
   "status": "pending",
   "attempt_count": 0,
   "max_attempts": 3,
   "last_error": null,
+  "workload_id": "9e2f...-uuid",
   "created_at": "2026-08-25T14:03:21.123Z",
   "updated_at": "2026-08-25T14:03:21.123Z"
 }
 ```
 `status` is one of: `pending`, `queued`, `running`, `succeeded`, `failed`, `retrying`, `cancelled`,
-`dead_letter`. Note: nothing currently transitions a job past `pending`/`cancelled` — there is no
-scheduler yet (see README Roadmap), so `queued`/`running`/`succeeded`/`failed`/`retrying`/
-`dead_letter` are reachable in the domain model and API contract but not yet produced by any code
-path.
+`dead_letter`, driven by a real `PriorityScheduler`/`LocalWorkerPool`/`RetryDispatcher` pipeline
+(see `docs/architecture/execution-model.md`). `workload_id` is `null` for a job created directly
+via `POST /api/v1/jobs` rather than as part of a workload.
+
+## Workloads
+
+A workload is a logical grouping of related jobs submitted as one unit (e.g. one CSV import) — see
+`docs/architecture/workload-model.md`. `status` and every item count below are computed live from
+the workload's current child jobs on every read, never a persisted/cached counter.
+
+### `POST /api/v1/workloads`
+Creates a workload and one job per item (each created-then-scheduled exactly like
+`POST /api/v1/jobs`). `items` may be omitted/empty (a valid, immediately-`succeeded` workload).
+```json
+{ "type": "user.process", "items": [ { "name": "Alice", "email": "alice@example.com" } ] }
+```
+Response: `201` with the workload plus an `items` array of per-item dispatch outcomes
+(`{"job_id": "...", "scheduled": true}`).
+
+### `GET /api/v1/workloads?limit=50&offset=0`
+Lists workloads in creation order, each with live-computed progress. `limit` defaults to 50, capped
+at 500.
+```json
+{ "workloads": [ /* Workload[] */ ], "total": 10, "limit": 50, "offset": 0 }
+```
+
+### `GET /api/v1/workloads/{id}`
+Fetches one workload with live-computed progress. `404` if unknown.
+
+### `GET /api/v1/workloads/{id}/items?limit=50&offset=0`
+Bounded, paginated view of a workload's individual child-job outcomes (name/email/status/attempts/
+last_error per item — parsed best-effort from each job's payload).
+```json
+{ "items": [ /* WorkloadJobItem[] */ ], "total": 137, "limit": 50, "offset": 0 }
+```
+
+### Workload shape
+```json
+{
+  "id": "9e2f...-uuid",
+  "type": "user.process",
+  "status": "running",
+  "total_items": 100,
+  "queued_items": 10,
+  "running_items": 2,
+  "completed_items": 85,
+  "failed_items": 3,
+  "retrying_items": 1,
+  "dead_letter_items": 1,
+  "created_at": "2026-09-02T15:03:13.745Z",
+  "updated_at": "2026-09-02T15:03:13.745Z"
+}
+```
+`status` is one of `pending`, `queued`, `running`, `succeeded`, `failed`. `retrying_items` is a
+sub-count of `queued_items` (a job that failed once and is backing off before another attempt is
+still "queued" for status-derivation purposes, but distinguishably retrying); `dead_letter_items`
+is a sub-count of `failed_items` (retries exhausted, vs. an outright non-retryable failure). See
+`docs/architecture/phase-3g-audit.md` §3.2 for the full rationale.
 
 ## Workflows
 

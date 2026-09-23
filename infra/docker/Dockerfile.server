@@ -37,6 +37,7 @@ FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         libpq5 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --shell /usr/sbin/nologin flowforge
@@ -45,5 +46,13 @@ COPY --from=builder /src/build/apps/server/flowforge_server /usr/local/bin/flowf
 
 USER flowforge
 EXPOSE 8080
+
+# Hits the same GET /ready the dashboard's System health page polls (see
+# apps/server/src/http/routes/health_routes.cpp) -- a real readiness check
+# (database/scheduler/worker_pool/retry_dispatcher), not just "is the
+# listener up". start-period gives the process time to connect to
+# PostgreSQL and start the scheduler/worker pool before failures count.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8080/ready || exit 1
 
 ENTRYPOINT ["/usr/local/bin/flowforge_server"]

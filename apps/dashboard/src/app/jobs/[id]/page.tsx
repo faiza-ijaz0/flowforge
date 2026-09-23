@@ -56,6 +56,18 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
           <div className="mt-2 text-lg font-semibold">{job.job_type || "—"}</div>
         </Card>
         <Card>
+          <div className="text-xs uppercase tracking-wide text-[var(--muted)]">Workload</div>
+          <div className="mt-2 text-lg font-semibold">
+            {job.workload_id ? (
+              <Link href={`/workloads/${job.workload_id}`} className="font-mono text-sm text-[var(--accent)]">
+                {job.workload_id.slice(0, 8)}…
+              </Link>
+            ) : (
+              <span className="text-[var(--muted)]">—</span>
+            )}
+          </div>
+        </Card>
+        <Card>
           <div className="text-xs uppercase tracking-wide text-[var(--muted)]">Attempts</div>
           <div className="mt-2 text-lg font-semibold">
             {job.attempt_count} / {job.max_attempts}

@@ -105,26 +105,42 @@ class Workload {
   [[nodiscard]] std::size_t running_items() const noexcept { return running_items_; }
   [[nodiscard]] std::size_t completed_items() const noexcept { return completed_items_; }
   [[nodiscard]] std::size_t failed_items() const noexcept { return failed_items_; }
+  /// Subset of `queued_items()` whose `JobStatus` is specifically
+  /// `Retrying` rather than `Pending`/`Queued` (Phase 3G) -- see
+  /// `classify_job_status_for_workload`'s doc comment for why `Retrying`
+  /// stays folded into the `Queued` bucket for status derivation; this
+  /// count exists purely so the UI can distinguish "never run yet" from
+  /// "failed once, backing off before another attempt" without changing
+  /// `WorkloadStatus` derivation.
+  [[nodiscard]] std::size_t retrying_items() const noexcept { return retrying_items_; }
+  /// Subset of `failed_items()` whose `JobStatus` is specifically
+  /// `DeadLetter` (retries exhausted) rather than an outright `Failed`/
+  /// `Cancelled`. Same rationale as `retrying_items()`.
+  [[nodiscard]] std::size_t dead_letter_items() const noexcept { return dead_letter_items_; }
   [[nodiscard]] WorkloadStatus status() const noexcept { return status_; }
   [[nodiscard]] infra::TimePoint created_at() const noexcept { return created_at_; }
   [[nodiscard]] infra::TimePoint updated_at() const noexcept { return updated_at_; }
 
   /// Applies a freshly-computed progress snapshot (Phase 3B: all four
-  /// `WorkloadItemOutcome` buckets, not just completed/failed) and
-  /// re-derives status() via derive_workload_status() (which only ever
-  /// needed completed/failed -- see that function's doc comment; queued/
-  /// running are purely additive display detail, invisible to status
-  /// derivation). Deliberately does not touch updated_at() -- see class
-  /// comment: progress is computed on demand, not persisted, so there is
-  /// no meaningful "row last written" moment to advance here;
+  /// `WorkloadItemOutcome` buckets, not just completed/failed; Phase 3G
+  /// additionally: `retrying`/`dead_letter` sub-counts) and re-derives
+  /// status() via derive_workload_status() (which only ever needed
+  /// completed/failed -- see that function's doc comment; queued/running/
+  /// retrying/dead_letter are purely additive display detail, invisible to
+  /// status derivation). Deliberately does not touch updated_at() -- see
+  /// class comment: progress is computed on demand, not persisted, so
+  /// there is no meaningful "row last written" moment to advance here;
   /// updated_at() continues to reflect the persisted row (which this
   /// phase never mutates after creation).
   void apply_progress(std::size_t queued_items, std::size_t running_items, std::size_t completed_items,
-                      std::size_t failed_items) noexcept {
+                      std::size_t failed_items, std::size_t retrying_items = 0,
+                      std::size_t dead_letter_items = 0) noexcept {
     queued_items_ = queued_items;
     running_items_ = running_items;
     completed_items_ = completed_items;
     failed_items_ = failed_items;
+    retrying_items_ = retrying_items;
+    dead_letter_items_ = dead_letter_items;
     status_ = derive_workload_status(total_items_, completed_items_, failed_items_);
   }
 
@@ -145,6 +161,8 @@ class Workload {
   std::size_t running_items_ = 0;
   std::size_t completed_items_ = 0;
   std::size_t failed_items_ = 0;
+  std::size_t retrying_items_ = 0;
+  std::size_t dead_letter_items_ = 0;
   WorkloadStatus status_ = WorkloadStatus::Pending;
   infra::TimePoint created_at_;
   infra::TimePoint updated_at_;

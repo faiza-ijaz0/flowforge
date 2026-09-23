@@ -14,6 +14,8 @@ nlohmann::json to_json(const domain::Workload& workload) {
       {"running_items", workload.running_items()},
       {"completed_items", workload.completed_items()},
       {"failed_items", workload.failed_items()},
+      {"retrying_items", workload.retrying_items()},
+      {"dead_letter_items", workload.dead_letter_items()},
       {"created_at", to_iso8601(workload.created_at())},
       {"updated_at", to_iso8601(workload.updated_at())},
   };

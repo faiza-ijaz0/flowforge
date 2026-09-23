@@ -17,6 +17,7 @@ import type {
   PreviewResponse,
   ProcessingTarget,
   ProcessResponse,
+  ReadyResponse,
   StructuredRecord,
   UserImportResponse,
   Workload,
@@ -66,6 +67,37 @@ async function handleResponse<T>(fetchPromise: Promise<Response>): Promise<T> {
   return (await response.json()) as T;
 }
 
+export type ReadinessResult =
+  | { reachable: true; body: ReadyResponse }
+  | { reachable: false; message: string };
+
+/**
+ * GET /ready intentionally responds with HTTP 503 (not 200) whenever any
+ * readiness check fails (see apps/server/src/http/routes/health_routes.cpp)
+ * -- the JSON body's `checks` breakdown is well-formed either way. Routing
+ * this through request()/handleResponse() (which throws ApiError on any
+ * non-ok status) would discard that breakdown exactly when callers most
+ * need to render it, and would also conflate "API unreachable" with "API
+ * reachable but unhealthy" -- two states the dashboard home/health pages
+ * must distinguish (see docs/architecture/phase-3g-audit.md §2.5).
+ */
+async function fetchReadiness(): Promise<ReadinessResult> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl}/ready`, { cache: "no-store" });
+  } catch {
+    return {
+      reachable: false,
+      message: `Could not reach FlowForge API at ${apiBaseUrl}. Is the server running?`,
+    };
+  }
+  const body = (await response.json().catch(() => null)) as ReadyResponse | null;
+  if (!body) {
+    return { reachable: false, message: `Received a malformed response from ${apiBaseUrl}/ready.` };
+  }
+  return { reachable: true, body };
+}
+
 function request<T>(path: string, init?: RequestInit): Promise<T> {
   return handleResponse<T>(
     fetch(`${apiBaseUrl}${path}`, {
@@ -89,7 +121,7 @@ function requestForm<T>(path: string, formData: FormData): Promise<T> {
 
 export const apiClient = {
   health: () => request<{ status: string }>("/health"),
-  ready: () => request<{ status: string; environment: string; uptime_seconds: number }>("/ready"),
+  readiness: fetchReadiness,
 
   listJobs: (limit = 50, offset = 0) =>
     request<ListJobsResponse>(`/api/v1/jobs?limit=${limit}&offset=${offset}`),

@@ -113,6 +113,21 @@ export function WorkloadProgressPanel({
         <StatTile label="Failed" value={workload.failed_items} tone="text-red-300" />
       </div>
 
+      {/* Retrying/dead-letter are sub-counts of Queued/Failed above (see
+          docs/architecture/phase-3g-audit.md §3.2) -- shown only when
+          non-zero so a workload with no retries doesn't get two permanent
+          zero-tiles cluttering the summary. */}
+      {(workload.retrying_items > 0 || workload.dead_letter_items > 0) && (
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          {workload.retrying_items > 0 && (
+            <StatTile label="Retrying" value={workload.retrying_items} tone="text-amber-300" />
+          )}
+          {workload.dead_letter_items > 0 && (
+            <StatTile label="Dead-letter" value={workload.dead_letter_items} tone="text-red-400" />
+          )}
+        </div>
+      )}
+
       {error && <div className="mt-3 text-xs text-red-400">{error} -- retrying…</div>}
     </Card>
   );

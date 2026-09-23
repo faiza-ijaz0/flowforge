@@ -1,29 +1,35 @@
 # FlowForge
 
-FlowForge is a high-performance job processing and workflow orchestration platform built around a
-concurrent C++ engine, with a REST API, PostgreSQL persistence, and a Next.js operator dashboard.
+FlowForge is a job processing and workload orchestration platform: upload a CSV or an image/
+screenshot, watch it become a real workload of real jobs, dispatched through a concurrent C++
+scheduler and worker pool, persisted in PostgreSQL, and observable end-to-end from a Next.js
+dashboard. It is built around a concurrent C++ engine, a REST API, PostgreSQL persistence, and an
+operator dashboard that never shows a fabricated number.
 
-This repository is at **Phase 2B-5: production observability and operational reliability**. Phase
-1, Phase 2A (PostgreSQL persistence), Phase 2B-1 (handler abstraction), Phase 2B-2 (Scheduler +
-priority dispatch), Phase 2B-3 (Executor + WorkerPool + real job execution), and Phase 2B-4
-(retry engine: retryable-failure classification, exponential backoff, `RetryDispatcher`,
-DeadLetter) are done. A job dispatched by the Scheduler is genuinely executed —
-`Queued -> Running -> Succeeded`/`Failed`/`Retrying`/`DeadLetter`/`Cancelled` — through
-`HandlerRegistry`/`IJobHandler`, with a real `job_attempts` row persisted per attempt, cooperative
-cancellation/timeout (never a forced thread kill), and a real, restart-safe retry engine that
-re-submits a failed-but-retryable job through the same scheduling path a fresh job takes. Phase
-2B-5 adds the operational layer on top: `GET /ready` reflects the real state of PostgreSQL, the
-scheduler, the worker pool, and the retry dispatcher (never a hardcoded `200 ok`); a coherent,
-bounded metrics vocabulary covers job/scheduler/executor/retry/database counters plus a
-monotonic-clock execution-duration histogram; every 5xx HTTP error returns a safe, generic message
-(the real diagnostic detail stays in logs); and startup/shutdown are RAII-clean with no leaked
-threads on a failed start. Verified end-to-end locally: a real job created through the API/
-dashboard is picked up, executed, and reaches `Succeeded` against a real PostgreSQL database, and
-a real retry-then-succeed cycle has been observed live against the running server. Workflow DAG
-execution is still deliberately not yet implemented — see
-[`docs/architecture/overview.md`](docs/architecture/overview.md) and
-[`docs/architecture/execution-model.md`](docs/architecture/execution-model.md) for exactly what's
-real versus interface-only, and why.
+This repository is at **Phase 3G: Unified FlowForge Platform** — the phase that ties every prior
+phase's work into one coherent, navigable product rather than a set of independent features. The
+execution core (Phase 1–2B) is unchanged and still the foundation: a job dispatched by
+`engine::PriorityScheduler` is genuinely executed — `Queued -> Running ->
+Succeeded`/`Failed`/`Retrying`/`DeadLetter`/`Cancelled` — through `HandlerRegistry`/`IJobHandler`,
+with a real `job_attempts` row persisted per attempt, cooperative cancellation/timeout, and a real,
+restart-safe retry engine (`RetryDispatcher`). On top of that, Phase 3A–3F added the **Workload**
+model (a logical grouping of jobs submitted as one unit — e.g. one CSV import), a
+source-/target-agnostic **input processing pipeline** (CSV and image/screenshot-via-OCR sources,
+crossed with Users/Products/Categories targets), and real, persisted domains for **Products** and
+**Categories** (Users validates/normalizes but has no dedicated table yet — see
+[`docs/architecture/user-import.md`](docs/architecture/user-import.md)). Phase 3G's own job was an
+audit-first hardening pass: it closed the gaps that audit found (a missing `/workloads` browse
+page, `workload_id` not exposed on a job's own JSON, no `total` on two paginated list endpoints, no
+workload-level visibility into which jobs were specifically retrying or dead-lettered) and added a
+`/health` observability page, a real dashboard home, Docker healthchecks, and consistent
+loading/empty/error handling across the dashboard — all additive, none of it a rewrite of the
+execution or persistence architecture. See
+[`docs/architecture/phase-3g-audit.md`](docs/architecture/phase-3g-audit.md) for the full
+before/after gap analysis, and [`docs/architecture/overview.md`](docs/architecture/overview.md) /
+[`docs/architecture/execution-model.md`](docs/architecture/execution-model.md) /
+[`docs/architecture/workload-model.md`](docs/architecture/workload-model.md) /
+[`docs/architecture/input-processing.md`](docs/architecture/input-processing.md) for what's real
+versus interface-only, and why. Workflow DAG execution is still deliberately not yet implemented.
 
 ## Why FlowForge exists
 
@@ -32,6 +38,26 @@ single pattern. FlowForge is an attempt to build the real thing: a job engine wi
 primitives, typed configuration, structured error handling, a persistence layer that can be swapped
 without touching business logic, and an API/dashboard that never lies about what's actually
 implemented.
+
+## Example workflow
+
+1. Open the dashboard's **Processing Center** (`/processing`), pick a target (Users, Products, or
+   Categories) and a source (CSV, image, or screenshot), and upload a file.
+2. CSV+Users submits directly; every other combination goes through an explicit
+   **preview** step first (`POST /api/v1/process/preview` — extracts and validates records,
+   creates nothing yet) so you can see exactly what will be created before confirming
+   (`POST /api/v1/process/confirm`).
+3. Confirming creates a real **Workload** (`POST /api/v1/workloads` under the hood) — one Job per
+   valid record, each dispatched through the same `PriorityScheduler`/`LocalWorkerPool` pipeline as
+   any other job.
+4. The dashboard takes you straight to that workload's detail page (`/workloads/{id}`), which polls
+   `GET /api/v1/workloads/{id}` and shows real, live-computed progress — queued/running/succeeded/
+   failed, plus retrying/dead-letter sub-counts — never a cached or invented number.
+5. Drill into any individual job (`/jobs/{id}`) for its real execution attempt history
+   (`GET /api/v1/jobs/{id}/attempts`) — worker, outcome, duration, error — or browse
+   `/workloads`, `/jobs`, `/products`, `/categories` for the full, paginated history.
+6. Check `/health` for the same live `GET /ready` breakdown (database, scheduler, worker pool,
+   retry dispatcher) an orchestrator's healthcheck would use.
 
 ## Architecture at a glance
 
@@ -83,9 +109,9 @@ flowforge/
 │   ├── docker/                Dockerfiles for server + dashboard
 │   └── monitoring/            placeholder for future Prometheus/Grafana config
 ├── docs/
-│   ├── architecture/           architecture overview + decisions
-│   ├── api/                    placeholder for OpenAPI/API reference docs
-│   └── development/            placeholder for contributor guides
+│   ├── architecture/           architecture overview, per-domain design docs, and phase audits
+│   ├── api/                    API reference (`reference.md`)
+│   └── development/            contributor setup guide (`getting-started.md`)
 ├── scripts/                  db-migrate.sh/.ps1 and other dev scripts
 ├── cmake/                    CompilerWarnings.cmake, Sanitizers.cmake, StaticAnalysis.cmake
 ├── CMakeLists.txt
@@ -217,7 +243,17 @@ npm run dev:dashboard
 ```
 
 Opens on `http://localhost:3000`. Set `NEXT_PUBLIC_API_URL` (in `apps/dashboard/.env.local`, copied
-from `apps/dashboard/.env.example`) if the server isn't on `http://localhost:8080`.
+from `apps/dashboard/.env.example`) if the server isn't on `http://localhost:8080`. The server's
+`FLOWFORGE_CORS_ALLOWED_ORIGIN` must match the dashboard's own origin exactly (default
+`http://localhost:3000` on both sides) — see `.env.example`.
+
+Pages: **Overview** (`/`, real workload/job counts + `/ready` health breakdown) · **Processing
+Center** (`/processing`, upload → preview → confirm) · **Workloads** (`/workloads`,
+`/workloads/{id}`) · **Jobs** (`/jobs`, `/jobs/{id}`, with execution attempt history) · **Users**
+(`/users`, import wizard) · **Products** / **Categories** (`/products`, `/categories`, paginated
+persisted records) · **Workflows** / **Workers** (read-only) · **System health** (`/health`, live
+`GET /ready` polling) · **Metrics** (`/metrics`, raw text feed) · **Queues** / **Logs** /
+**Settings** (honest `NotYetImplemented` placeholders — no backend yet, never a fake empty state).
 
 ```bash
 npm run lint:dashboard
@@ -345,6 +381,43 @@ list and the naming convention. Every 5xx HTTP error now returns a fixed, generi
 of ever echoing a raw exception string to a client. Startup-failure cleanup (an unreachable
 PostgreSQL leaves no leaked thread or connection) and graceful-shutdown ordering are both now
 covered by dedicated tests, not just asserted in comments.
+
+**Phase 3A — done:** the Workload model. `domain::Workload`/`services::WorkloadService`,
+`jobs.workload_id` (migration 0013), `POST /api/v1/workloads` (one Job per item, created-then-
+scheduled exactly like `POST /api/v1/jobs`), live-computed progress
+(queued/running/completed/failed) derived from child jobs on every read — never a persisted,
+driftable counter. See [`docs/architecture/workload-model.md`](docs/architecture/workload-model.md).
+
+**Phase 3B — done:** bulk User import. `POST /api/v1/workloads/user-imports` (CSV upload → one
+workload, one `user.process` job per valid row), strict CSV parsing/validation, paginated
+per-item results (`GET /api/v1/workloads/{id}/items`). See
+[`docs/architecture/user-import.md`](docs/architecture/user-import.md).
+
+**Phase 3C/3D — done:** the source-/target-agnostic Processing Center. `POST /api/v1/process`
+generalizes bulk import beyond Users+CSV; `POST /api/v1/process/preview` +
+`POST /api/v1/process/confirm` add an explicit review step (extraction creates nothing; only
+confirmation does) and image/screenshot-via-OCR as a real second input source alongside CSV. See
+[`docs/architecture/input-processing.md`](docs/architecture/input-processing.md).
+
+**Phase 3E/3F — done:** Products and Categories as real, persisted, dedicated domains (unlike
+Users) — `handlers::ProductProcessHandler`/`CategoryProcessHandler` upsert into their own tables,
+with paginated read APIs (`GET /api/v1/products`, `GET /api/v1/categories`, both with `total`) and
+dashboard list pages. See
+[`docs/architecture/product-processing.md`](docs/architecture/product-processing.md) /
+[`docs/architecture/category-processing.md`](docs/architecture/category-processing.md).
+
+**Phase 3G (this phase) — done:** platform unification and hardening, driven by an explicit
+audit-first pass rather than new features. Closed: no `/workloads` browse page existed despite the
+API supporting it; a job's own JSON never exposed its `workload_id` (so a job page couldn't link
+back to its workload); `GET /api/v1/jobs`/`GET /api/v1/workloads` had no `total`, blocking real
+pagination UI; workload-level progress collapsed `retrying`→queued and `dead_letter`→failed into
+their parent buckets with no visible sub-count. Added: a `/health` dashboard page over the
+already-real `GET /ready`; a dashboard home showing real workload/job counts instead of a bare
+reachability dot; Docker `HEALTHCHECK`s for the server and dashboard images; consistent
+loading/empty/error+retry handling across list pages; an explicit "View Workload / View Jobs /
+Return to Processing Center" path after a successful submission instead of a dead-end success
+message. See [`docs/architecture/phase-3g-audit.md`](docs/architecture/phase-3g-audit.md) for the
+full gap analysis this phase worked from.
 
 **Next phase — workflow DAG execution, stronger cancellation/timeout, more observability:**
 - Workflow execution: DAG validation (cycle detection), step sequencing, a real create-workflow

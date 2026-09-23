@@ -75,6 +75,29 @@ TEST_F(WorkloadRoutesTest, CreateWorkloadReturnsCreatedWithItemsAndDispatchOutco
   }
 }
 
+// Phase 3G: closes the gap docs/architecture/phase-3g-audit.md §3.1
+// identified -- domain::Job::workload_id() existed but job_json.cpp never
+// serialized it, so a job's own detail view had no way back to its parent
+// workload. This proves the fix end-to-end, not just at the json layer.
+TEST_F(WorkloadRoutesTest, JobCreatedAsPartOfAWorkloadExposesItsWorkloadIdOnTheJobDetailRoute) {
+  auto client = make_client();
+  nlohmann::json body{
+      {"type", "user.process"},
+      {"items", nlohmann::json::array({nlohmann::json{{"name", "Alice"}, {"email", "alice@example.com"}}})}};
+  auto created = client.Post("/api/v1/workloads", body.dump(), "application/json");
+  ASSERT_TRUE(created);
+  ASSERT_EQ(created->status, 201);
+  auto parsed = nlohmann::json::parse(created->body);
+  const std::string workload_id = parsed["id"].get<std::string>();
+  const std::string job_id = parsed["items"][0]["job_id"].get<std::string>();
+
+  auto job_res = client.Get("/api/v1/jobs/" + job_id);
+  ASSERT_TRUE(job_res);
+  EXPECT_EQ(job_res->status, 200);
+  auto job_parsed = nlohmann::json::parse(job_res->body);
+  EXPECT_EQ(job_parsed["workload_id"], workload_id);
+}
+
 TEST_F(WorkloadRoutesTest, CreateWorkloadWithZeroItemsSucceedsImmediately) {
   auto client = make_client();
   nlohmann::json body{{"type", "user.process"}, {"items", nlohmann::json::array()}};
@@ -119,6 +142,10 @@ TEST_F(WorkloadRoutesTest, GetWorkloadReturnsCreatedWorkload) {
   auto parsed = nlohmann::json::parse(res->body);
   EXPECT_EQ(parsed["id"], id);
   EXPECT_EQ(parsed["total_items"], 1);
+  // Phase 3G: retrying/dead_letter sub-counts are additive breakdowns of
+  // queued_items/failed_items -- a freshly created workload has none yet.
+  EXPECT_EQ(parsed["retrying_items"], 0);
+  EXPECT_EQ(parsed["dead_letter_items"], 0);
 }
 
 TEST_F(WorkloadRoutesTest, GetWorkloadReturnsNotFoundForUnknownId) {
@@ -145,6 +172,11 @@ TEST_F(WorkloadRoutesTest, ListWorkloadsReturnsCreatedWorkloads) {
   auto parsed = nlohmann::json::parse(res->body);
   ASSERT_TRUE(parsed.contains("workloads"));
   EXPECT_GE(parsed["workloads"].size(), 2u);
+  // Phase 3G: total/limit/offset let the dashboard render real pagination
+  // controls the same way /api/v1/products already does.
+  EXPECT_GE(parsed["total"].get<std::size_t>(), 2u);
+  EXPECT_EQ(parsed["limit"], 50);
+  EXPECT_EQ(parsed["offset"], 0);
 }
 
 // 5xx sanitization (a Database/Internal error's message never reaching an

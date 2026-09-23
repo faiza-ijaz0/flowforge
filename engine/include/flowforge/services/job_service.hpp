@@ -57,6 +57,11 @@ class JobService {
   [[nodiscard]] Result<std::vector<domain::Job>> list_jobs(std::size_t limit, std::size_t offset) const;
   [[nodiscard]] Result<domain::Job> cancel_job(const std::string& id);
 
+  /// Total number of jobs, independent of any list_jobs() page -- mirrors
+  /// product/category routes' `->count()` use (Phase 3G), so `GET
+  /// /api/v1/jobs` can report a `total` the same way those endpoints do.
+  [[nodiscard]] Result<std::size_t> count_jobs() const;
+
   /// Transitions a job from Pending to Queued and persists it. Called by
   /// the HTTP layer after engine::IScheduler::schedule() accepts a
   /// newly-created job (see apps/server/src/http/routes/job_routes.cpp)

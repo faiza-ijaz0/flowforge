@@ -55,6 +55,12 @@ class IJobRepository {
   /// 0013), so this is not a full-table scan.
   [[nodiscard]] virtual Result<std::vector<domain::Job>> list_by_workload_id(
       const infra::WorkloadId& workload_id, std::size_t limit, std::size_t offset) const = 0;
+
+  /// Total number of jobs, independent of any `list()` page -- mirrors
+  /// `IProductRepository::count()`/`ICategoryRepository::count()` (Phase
+  /// 3G), added so `GET /api/v1/jobs` can report a `total` the same way
+  /// those list endpoints already do.
+  [[nodiscard]] virtual Result<std::size_t> count() const = 0;
 };
 
 }  // namespace flowforge::persistence

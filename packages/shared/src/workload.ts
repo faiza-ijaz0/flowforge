@@ -21,6 +21,10 @@ export interface Workload {
   running_items: number;
   completed_items: number;
   failed_items: number;
+  /** Subset of queued_items whose underlying job status is "retrying" (Phase 3G). */
+  retrying_items: number;
+  /** Subset of failed_items whose underlying job status is "dead_letter" (Phase 3G). */
+  dead_letter_items: number;
   created_at: string;
   updated_at: string;
 }
@@ -52,6 +56,9 @@ export interface CreateWorkloadResponse extends Workload {
 
 export interface ListWorkloadsResponse {
   workloads: Workload[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 /**

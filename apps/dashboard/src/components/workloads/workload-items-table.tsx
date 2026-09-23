@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import type { WorkloadJobItem } from "@flowforge/shared";
@@ -65,6 +66,7 @@ export function WorkloadItemsTable({ workloadId }: { workloadId: string }) {
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
+                <th className="px-4 py-3 font-medium">Job</th>
                 <th className="px-4 py-3 font-medium">Name</th>
                 <th className="px-4 py-3 font-medium">Email</th>
                 <th className="px-4 py-3 font-medium">Status</th>
@@ -76,14 +78,14 @@ export function WorkloadItemsTable({ workloadId }: { workloadId: string }) {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-[var(--muted)]">
+                  <td colSpan={7} className="px-4 py-8 text-center text-[var(--muted)]">
                     Loading…
                   </td>
                 </tr>
               )}
               {!loading && items.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-[var(--muted)]">
+                  <td colSpan={7} className="px-4 py-8 text-center text-[var(--muted)]">
                     No items to show.
                   </td>
                 </tr>
@@ -91,6 +93,15 @@ export function WorkloadItemsTable({ workloadId }: { workloadId: string }) {
               {!loading &&
                 items.map((item) => (
                   <tr key={item.job_id} className="border-b border-[var(--border)] last:border-0">
+                    <td className="px-4 py-3">
+                      <Link
+                        href={`/jobs/${item.job_id}`}
+                        className="font-mono text-xs text-[var(--accent)]"
+                        title={item.job_id}
+                      >
+                        {item.job_id.slice(0, 8)}…
+                      </Link>
+                    </td>
                     <td className="px-4 py-3">{item.name ?? "—"}</td>
                     <td className="px-4 py-3 text-[var(--muted)]">{item.email ?? "—"}</td>
                     <td className="px-4 py-3">

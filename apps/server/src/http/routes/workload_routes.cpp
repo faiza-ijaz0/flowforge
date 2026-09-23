@@ -114,11 +114,18 @@ void register_workload_routes(httplib::Server& server,
       write_error(res, workloads.error());
       return;
     }
+    auto total = workload_service->count_workloads();
+    if (!total) {
+      write_error(res, total.error());
+      return;
+    }
     nlohmann::json items = nlohmann::json::array();
     for (const auto& workload : *workloads) {
       items.push_back(to_json(workload));
     }
-    res.set_content(nlohmann::json{{"workloads", items}}.dump(), "application/json");
+    res.set_content(
+        nlohmann::json{{"workloads", items}, {"total", *total}, {"limit", limit}, {"offset", offset}}.dump(),
+        "application/json");
   });
 
   server.Get("/api/v1/workloads/:id",

@@ -23,6 +23,8 @@ export interface Job {
   attempt_count: number;
   max_attempts: number;
   last_error: string | null;
+  /** Null when the job was not created as part of a workload (e.g. POST /api/v1/jobs directly). */
+  workload_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -57,6 +59,9 @@ export interface CreateJobResponse extends Job {
 
 export interface ListJobsResponse {
   jobs: Job[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 /**

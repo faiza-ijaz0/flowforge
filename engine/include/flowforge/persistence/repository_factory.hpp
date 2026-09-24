@@ -10,6 +10,7 @@
 #include "flowforge/persistence/category_repository.hpp"
 #include "flowforge/persistence/job_repository.hpp"
 #include "flowforge/persistence/product_repository.hpp"
+#include "flowforge/persistence/user_repository.hpp"
 #include "flowforge/persistence/worker_repository.hpp"
 #include "flowforge/persistence/workflow_repository.hpp"
 #include "flowforge/persistence/workload_repository.hpp"
@@ -28,6 +29,7 @@ struct RepositoryBundle {
   std::shared_ptr<IWorkloadRepository> workloads;
   std::shared_ptr<IProductRepository> products;
   std::shared_ptr<ICategoryRepository> categories;
+  std::shared_ptr<IUserRepository> users;
 
   /// Cheap, non-blocking readiness signal for whichever persistence
   /// backend is actually active (Phase 2B-5) -- always returns `true` for

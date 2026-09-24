@@ -266,6 +266,64 @@ Result<std::size_t> InMemoryCategoryRepository::count() const {
   return insertion_order_.size();
 }
 
+// --- InMemoryUserRepository -------------------------------------------
+
+Result<void> InMemoryUserRepository::upsert(const infra::JobId& job_id,
+                                            const domain::NormalizedUserRecord& record) {
+  std::lock_guard lock(mutex_);
+  const auto now = clock_->now();
+  auto existing_it = id_by_email_.find(record.email);
+  if (existing_it != id_by_email_.end()) {
+    domain::User& user = users_by_id_.at(existing_it->second);
+    user.name = record.name;
+    user.phone = record.phone;
+    user.job_id = job_id;
+    user.updated_at = now;
+    return {};
+  }
+
+  domain::User user{.id = infra::UserId::generate(),
+                    .name = record.name,
+                    .email = record.email,
+                    .phone = record.phone,
+                    .job_id = job_id,
+                    .created_at = now,
+                    .updated_at = now};
+  const std::string id = user.id.value();
+  id_by_email_.emplace(record.email, id);
+  users_by_id_.emplace(id, std::move(user));
+  insertion_order_.push_back(id);
+  return {};
+}
+
+Result<std::optional<domain::User>> InMemoryUserRepository::find_by_email(const std::string& email) const {
+  std::lock_guard lock(mutex_);
+  auto it = id_by_email_.find(email);
+  if (it == id_by_email_.end()) {
+    return std::optional<domain::User>(std::nullopt);
+  }
+  return std::optional<domain::User>(users_by_id_.at(it->second));
+}
+
+Result<std::vector<domain::User>> InMemoryUserRepository::list(std::size_t limit, std::size_t offset) const {
+  std::lock_guard lock(mutex_);
+  std::vector<domain::User> result;
+  if (offset >= insertion_order_.size()) {
+    return result;
+  }
+  const std::size_t end = std::min(insertion_order_.size(), offset + limit);
+  result.reserve(end - offset);
+  for (std::size_t i = offset; i < end; ++i) {
+    result.push_back(users_by_id_.at(insertion_order_[i]));
+  }
+  return result;
+}
+
+Result<std::size_t> InMemoryUserRepository::count() const {
+  std::lock_guard lock(mutex_);
+  return insertion_order_.size();
+}
+
 // --- InMemoryWorkflowRepository ------------------------------------------
 
 Result<void> InMemoryWorkflowRepository::insert(const domain::Workflow& workflow) {

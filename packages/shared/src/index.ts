@@ -5,3 +5,4 @@ export * from "./workload";
 export * from "./processing";
 export * from "./error";
 export * from "./health";
+export * from "./user";

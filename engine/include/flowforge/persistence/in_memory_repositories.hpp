@@ -9,6 +9,7 @@
 #include "flowforge/persistence/category_repository.hpp"
 #include "flowforge/persistence/job_repository.hpp"
 #include "flowforge/persistence/product_repository.hpp"
+#include "flowforge/persistence/user_repository.hpp"
 #include "flowforge/persistence/worker_repository.hpp"
 #include "flowforge/persistence/workflow_repository.hpp"
 #include "flowforge/persistence/workload_repository.hpp"
@@ -102,6 +103,27 @@ class InMemoryCategoryRepository final : public ICategoryRepository {
   mutable std::mutex mutex_;
   std::map<std::string, domain::Category> categories_by_id_;
   std::map<std::string, std::string> id_by_slug_;
+  std::vector<std::string> insertion_order_;
+};
+
+/// Thread-safe, in-process implementation of `IUserRepository` (Phase 3H)
+/// -- mirrors `InMemoryProductRepository`'s conventions exactly, keyed by
+/// `email` the same way that class is keyed by `sku`.
+class InMemoryUserRepository final : public IUserRepository {
+ public:
+  explicit InMemoryUserRepository(std::shared_ptr<infra::Clock> clock = infra::make_system_clock())
+      : clock_(std::move(clock)) {}
+
+  Result<void> upsert(const infra::JobId& job_id, const domain::NormalizedUserRecord& record) override;
+  [[nodiscard]] Result<std::optional<domain::User>> find_by_email(const std::string& email) const override;
+  [[nodiscard]] Result<std::vector<domain::User>> list(std::size_t limit, std::size_t offset) const override;
+  [[nodiscard]] Result<std::size_t> count() const override;
+
+ private:
+  std::shared_ptr<infra::Clock> clock_;
+  mutable std::mutex mutex_;
+  std::map<std::string, domain::User> users_by_id_;
+  std::map<std::string, std::string> id_by_email_;
   std::vector<std::string> insertion_order_;
 };
 

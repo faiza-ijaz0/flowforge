@@ -55,8 +55,23 @@ Result<domain::ExecutionResult> UserProcessHandler::execute(const engine::Execut
     return std::unexpected(normalized.error());
   }
 
-  context.logger().debug("user_process_handler", "normalized user record",
-                         {{.key = "job_id", .value = context.job_id().value()}});
+  auto upserted = user_repository_->upsert(context.job_id(), *normalized);
+  if (!upserted) {
+    const auto duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+    context.logger().warn("user_process_handler", "user persistence failed",
+                          {{.key = "job_id", .value = context.job_id().value()},
+                           {.key = "email", .value = normalized->email},
+                           {.key = "reason", .value = upserted.error().message()}});
+    // Unlike a malformed payload (never retryable), a persistence failure
+    // may be transient -- see the header's "Retryability" note.
+    return domain::ExecutionResult::failure(upserted.error().code(), upserted.error().message(),
+                                            /*retryable=*/true, duration);
+  }
+
+  context.logger().debug(
+      "user_process_handler", "upserted user record",
+      {{.key = "job_id", .value = context.job_id().value()}, {.key = "email", .value = normalized->email}});
 
   std::string output = R"({"name":")" + json_escape(normalized->name) + R"(","email":")" +
                        json_escape(normalized->email) + R"(")";

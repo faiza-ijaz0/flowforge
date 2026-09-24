@@ -8,6 +8,7 @@
 #include "flowforge/handlers/builtin_handlers.hpp"
 #include "flowforge/handlers/category_process_handler.hpp"
 #include "flowforge/handlers/product_process_handler.hpp"
+#include "flowforge/handlers/user_process_handler.hpp"
 #include "flowforge/providers/tesseract_ocr_provider.hpp"
 #include "http/cors.hpp"
 #include "http/routes/category_routes.hpp"
@@ -15,6 +16,7 @@
 #include "http/routes/job_routes.hpp"
 #include "http/routes/process_routes.hpp"
 #include "http/routes/product_routes.hpp"
+#include "http/routes/user_routes.hpp"
 #include "http/routes/worker_routes.hpp"
 #include "http/routes/workflow_routes.hpp"
 #include "http/routes/workload_routes.hpp"
@@ -58,6 +60,18 @@ Result<std::unique_ptr<App>> App::create(infra::AppConfig config) {
           std::make_shared<handlers::CategoryProcessHandler>(repositories->categories));
       !registered) {
     logger->critical("server", "failed to register category handler",
+                     {{.key = "error", .value = registered.error().message()}});
+    return std::unexpected(registered.error());
+  }
+  // Phase 3H: UserProcessHandler now also takes a constructor-injected
+  // repository (it upserts into the `users` table -- see its class
+  // comment for why Users gained the same dedicated persistence Products/
+  // Categories already had), so it moves out of register_builtin_handlers
+  // and is registered here, identically to Product/Category above.
+  if (auto registered = handler_registry->register_handler(
+          std::make_shared<handlers::UserProcessHandler>(repositories->users));
+      !registered) {
+    logger->critical("server", "failed to register user handler",
                      {{.key = "error", .value = registered.error().message()}});
     return std::unexpected(registered.error());
   }
@@ -160,6 +174,7 @@ App::App(infra::AppConfig config, std::shared_ptr<infra::Logger> logger,
       workload_repository_(std::move(repositories.workloads)),
       product_repository_(std::move(repositories.products)),
       category_repository_(std::move(repositories.categories)),
+      user_repository_(std::move(repositories.users)),
       job_service_(std::make_shared<services::JobService>(job_repository_, clock_, logger_, metrics_)),
       // Phase 3A: WorkloadService reuses JobService/scheduler exactly like
       // POST /api/v1/jobs does for a single job -- it is constructed here,
@@ -220,6 +235,7 @@ void App::register_routes() {
   register_process_routes(http_, input_processing_service_);
   register_product_routes(http_, product_repository_);
   register_category_routes(http_, category_repository_);
+  register_user_routes(http_, user_repository_);
 
   http_.set_logger(
       [logger = logger_, metrics = metrics_](const httplib::Request& req, const httplib::Response& res) {

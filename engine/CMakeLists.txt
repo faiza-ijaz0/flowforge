@@ -81,6 +81,7 @@ if(FLOWFORGE_WITH_POSTGRES)
     src/persistence/postgres/postgres_workload_repository.cpp
     src/persistence/postgres/postgres_product_repository.cpp
     src/persistence/postgres/postgres_category_repository.cpp
+    src/persistence/postgres/postgres_user_repository.cpp
   )
   target_link_libraries(flowforge_engine PRIVATE pqxx)
   # PUBLIC: repository_factory.hpp's #ifdef FLOWFORGE_WITH_POSTGRES branch

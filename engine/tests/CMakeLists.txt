@@ -41,6 +41,7 @@ add_executable(flowforge_engine_tests
   persistence/in_memory_workload_repository_test.cpp
   persistence/in_memory_product_repository_test.cpp
   persistence/in_memory_category_repository_test.cpp
+  persistence/in_memory_user_repository_test.cpp
   services/job_service_test.cpp
   services/workload_service_test.cpp
   services/user_import_parser_test.cpp
@@ -80,6 +81,7 @@ if(FLOWFORGE_WITH_POSTGRES)
     persistence/postgres/postgres_workload_repository_test.cpp
     persistence/postgres/postgres_product_repository_test.cpp
     persistence/postgres/postgres_category_repository_test.cpp
+    persistence/postgres/postgres_user_repository_test.cpp
   )
   target_include_directories(flowforge_engine_tests PRIVATE persistence/postgres)
   target_link_libraries(flowforge_engine_tests PRIVATE pqxx)

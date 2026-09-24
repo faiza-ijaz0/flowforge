@@ -39,7 +39,7 @@ inline void truncate_all(pqxx::connection& connection) {
   pqxx::work txn(connection);
   txn.exec(
       "TRUNCATE workflow_step_dependencies, workflow_steps, workflows, job_attempts, jobs, workers, "
-      "queues, audit_logs, workloads, products, categories RESTART IDENTITY CASCADE");
+      "queues, audit_logs, workloads, products, categories, users RESTART IDENTITY CASCADE");
   txn.commit();
 }
 

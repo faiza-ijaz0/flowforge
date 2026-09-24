@@ -1,6 +1,9 @@
 #pragma once
 
+#include <memory>
+
 #include "flowforge/engine/job_handler.hpp"
+#include "flowforge/persistence/user_repository.hpp"
 
 namespace flowforge::handlers {
 
@@ -18,7 +21,8 @@ namespace flowforge::handlers {
 /// payload missing either required field or with a malformed email. This
 /// is real, bounded application logic, not an echo -- see IJobHandler's
 /// "no arbitrary code execution" constraint, which this respects by only
-/// ever touching its own payload string, with no external I/O.
+/// ever touching its own payload string plus its own constructor-injected
+/// repository -- no external I/O beyond that.
 ///
 /// The actual validation/normalization rules live in
 /// `domain::validate_and_normalize_user_record()` (Phase 3B), shared with
@@ -26,8 +30,18 @@ namespace flowforge::handlers {
 /// (`services::parse_user_import_csv`) so a CSV row that the import
 /// preview reports as "valid" is guaranteed to be accepted by this
 /// handler at execution time too -- see docs/architecture/user-import.md.
-/// This class only owns JSON payload extraction and the
-/// execution-specific concerns (cancellation, output shape).
+///
+/// **Persistence (Phase 3H).** Every earlier phase left Users the one
+/// domain of the three (Users/Products/Categories) with no dedicated
+/// table -- a validated record was normalized and echoed back as the job's
+/// output, but nothing survived beyond the job/job_attempts rows every job
+/// already gets. That inconsistency is closed here: this handler now
+/// upserts into a `users` table (migration 0016) through a constructor-
+/// injected `IUserRepository`, exactly mirroring `ProductProcessHandler`'s
+/// "Why ProductProcessHandler writes to PostgreSQL directly" rationale --
+/// the repository is this handler instance's own dependency, resolved once
+/// at application composition (`apps/server/src/http/app.cpp`), never
+/// reached around `ExecutionContext`.
 ///
 /// Hand-rolled, minimal JSON field extraction (not nlohmann::json): the
 /// engine has zero JSON library dependency by design (see
@@ -39,18 +53,25 @@ namespace flowforge::handlers {
 /// (see docs/architecture/workload-model.md, "Known limitations"), not
 /// oversights.
 ///
-/// Retryability: this handler has no external I/O, so every failure path
-/// (malformed/missing fields, cancellation) is deterministic and would
-/// fail identically on a retry -- `retryable()` is therefore always
-/// `false` wherever it applies (the cooperative-cancellation
-/// `ExecutionResult::failure` path; see .cpp).
+/// Retryability: a validation failure (malformed/missing fields) is always
+/// non-retryable -- retrying an unfixable payload can never succeed,
+/// identical to before Phase 3H. A `users` table write failure
+/// (`ErrorCode::Database`/`Infrastructure`) is retryable=true, mirroring
+/// `ProductProcessHandler`: a transient database/connection-pool issue may
+/// succeed on a later attempt.
 class UserProcessHandler final : public engine::IJobHandler {
  public:
   static constexpr std::string_view kJobType = "user.process";
 
+  explicit UserProcessHandler(std::shared_ptr<persistence::IUserRepository> user_repository)
+      : user_repository_(std::move(user_repository)) {}
+
   [[nodiscard]] std::string_view job_type() const noexcept override { return kJobType; }
   [[nodiscard]] Result<domain::ExecutionResult> execute(const engine::ExecutionContext& context,
                                                         const std::string& payload) override;
+
+ private:
+  std::shared_ptr<persistence::IUserRepository> user_repository_;
 };
 
 }  // namespace flowforge::handlers

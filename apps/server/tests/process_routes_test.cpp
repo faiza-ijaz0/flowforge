@@ -122,6 +122,96 @@ TEST_F(ProcessRoutesTest, CsvPlusUsersIsFeatureCompleteAndCreatesARealWorkload) 
   EXPECT_EQ(parsed["items"].size(), 1u);
 }
 
+// Phase 3H: closes the persistence gap docs/architecture/phase-3g-audit.md
+// §2.4 flagged -- UserProcessHandler now upserts into a real `users` table,
+// mirroring ProductProcessHandler/CategoryProcessHandler. This proves it
+// end-to-end: CSV -> direct process() -> real execution -> GET /api/v1/users
+// reads back what the handler actually persisted, not what the job response
+// claims.
+TEST_F(ProcessRoutesTest, CsvUsersPersistsRealUsersAfterExecution) {
+  auto client = make_client();
+  auto res =
+      client.Post("/api/v1/process",
+                  process_request("csv", "users",
+                                  "name,email,phone\nAlice,alice@example.com,555-1\nBob,bob@example.com,\n"));
+  ASSERT_TRUE(res);
+  ASSERT_EQ(res->status, 201);
+  const std::string workload_id = nlohmann::json::parse(res->body)["id"].get<std::string>();
+
+  std::string final_status;
+  for (int i = 0; i < 100; ++i) {
+    auto get_res = client.Get("/api/v1/workloads/" + workload_id);
+    ASSERT_TRUE(get_res);
+    auto workload = nlohmann::json::parse(get_res->body);
+    final_status = workload["status"].get<std::string>();
+    if (final_status == "succeeded" || final_status == "failed") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  EXPECT_EQ(final_status, "succeeded");
+
+  // The job handler (handlers::UserProcessHandler), not this route,
+  // persisted these -- GET /api/v1/users reads real repository state.
+  auto users_res = client.Get("/api/v1/users?limit=50");
+  ASSERT_TRUE(users_res);
+  ASSERT_EQ(users_res->status, 200);
+  auto users_parsed = nlohmann::json::parse(users_res->body);
+  EXPECT_EQ(users_parsed["total"], 2u);
+  ASSERT_EQ(users_parsed["users"].size(), 2u);
+  bool found_alice = false;
+  for (const auto& user : users_parsed["users"]) {
+    if (user["email"] == "alice@example.com") {
+      found_alice = true;
+      EXPECT_EQ(user["name"], "Alice");
+      EXPECT_EQ(user["phone"], "555-1");
+      EXPECT_FALSE(user["job_id"].is_null());
+    }
+  }
+  EXPECT_TRUE(found_alice);
+}
+
+TEST_F(ProcessRoutesTest, GetUsersReturnsEmptyListInitially) {
+  auto client = make_client();
+  auto res = client.Get("/api/v1/users");
+  ASSERT_TRUE(res);
+  ASSERT_EQ(res->status, 200);
+  auto parsed = nlohmann::json::parse(res->body);
+  EXPECT_EQ(parsed["total"], 0u);
+  EXPECT_TRUE(parsed["users"].empty());
+}
+
+TEST_F(ProcessRoutesTest, GetUsersSupportsPagination) {
+  auto client = make_client();
+  std::string csv = "name,email\n";
+  for (int i = 0; i < 5; ++i) {
+    csv += "User " + std::to_string(i) + ",user" + std::to_string(i) + "@example.com\n";
+  }
+  auto process_res = client.Post("/api/v1/process", process_request("csv", "users", csv));
+  ASSERT_TRUE(process_res);
+  ASSERT_EQ(process_res->status, 201);
+  const std::string workload_id = nlohmann::json::parse(process_res->body)["id"].get<std::string>();
+
+  for (int i = 0; i < 100; ++i) {
+    auto get_res = client.Get("/api/v1/workloads/" + workload_id);
+    auto workload = nlohmann::json::parse(get_res->body);
+    if (workload["status"] == "succeeded") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  auto page1 = client.Get("/api/v1/users?limit=2&offset=0");
+  ASSERT_TRUE(page1);
+  auto page1_parsed = nlohmann::json::parse(page1->body);
+  EXPECT_EQ(page1_parsed["total"], 5u);
+  EXPECT_EQ(page1_parsed["users"].size(), 2u);
+
+  auto page2 = client.Get("/api/v1/users?limit=2&offset=4");
+  ASSERT_TRUE(page2);
+  EXPECT_EQ(nlohmann::json::parse(page2->body)["users"].size(), 1u);
+}
+
 TEST_F(ProcessRoutesTest, ImageSourceReturnsClearUnsupportedErrorNotFakeSuccess) {
   auto client = make_client();
   auto res = client.Post("/api/v1/process", process_request("image", "users", "not-real-image-bytes"));
@@ -527,6 +617,115 @@ TEST(ProcessRoutesBulkPostgresTest, HundredRecordImageFlowReconcilesAgainstRealP
     job_ids.insert(item["job_id"].get<std::string>());
   }
   EXPECT_EQ(job_ids.size(), valid_records) << "no duplicate jobs may exist for this workload";
+
+  // Phase 3H: UserProcessHandler now persists into a real `users` table
+  // (closing the gap docs/architecture/phase-3g-audit.md §2.4 flagged) --
+  // GET /api/v1/users reads real repository state, not the job response.
+  auto users_res = client.Get("/api/v1/users?limit=" + std::to_string(valid_records));
+  ASSERT_TRUE(users_res);
+  auto users_parsed = nlohmann::json::parse(users_res->body);
+  EXPECT_GE(users_parsed["total"].get<std::size_t>(), valid_records);
+
+  app->http_server().stop();
+  server_thread.join();
+}
+
+/// The CSV-source counterpart of the image test above (Phase 3H): CSV+Users
+/// is a direct-submit flow (POST /api/v1/process, no preview/confirm step
+/// -- see ProcessingUploadPanel's class comment for why), so this exercises
+/// that path specifically rather than reusing run_bulk_products_acceptance
+/// (which is preview/confirm-shaped). users_bulk_100.csv deterministically
+/// has exactly 5 invalid (malformed-email) rows out of 100, at the same
+/// positions (17/34/51/68/85) as products_bulk_100.csv's deterministic
+/// negative-price rows, for the same reconciliation-testing reason.
+TEST(ProcessRoutesBulkPostgresTest, HundredUserCsvFlowReconcilesAgainstRealPostgres) {
+  if (!postgres_test_database_url()) {
+    GTEST_SKIP() << "FLOWFORGE_TEST_DATABASE_URL (or FLOWFORGE_DATABASE_URL) is not set -- skipping "
+                    "bulk user CSV acceptance test.";
+  }
+  infra::AppConfig config;
+  config.log_level = infra::LogLevel::Off;
+  config.database_url = *postgres_test_database_url();
+  auto app_result = App::create(config);
+  ASSERT_TRUE(app_result.has_value()) << app_result.error().message();
+  auto app = std::move(*app_result);
+  int port = app->http_server().bind_to_any_port("127.0.0.1");
+  ASSERT_GT(port, 0);
+  std::thread server_thread([&app] { app->http_server().listen_after_bind(); });
+  for (int i = 0; i < 100 && !app->http_server().is_running(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(app->http_server().is_running());
+
+  httplib::Client client("127.0.0.1", port);
+  client.set_connection_timeout(2);
+  client.set_read_timeout(30);
+
+  const std::string csv = read_fixture_file("users_bulk_100.csv");
+  ASSERT_FALSE(csv.empty());
+
+  auto before = client.Get("/api/v1/workloads?limit=500");
+  ASSERT_TRUE(before);
+  const std::size_t workloads_before = nlohmann::json::parse(before->body)["workloads"].size();
+
+  httplib::MultipartFormDataItems items{
+      {.name = "source", .content = "csv", .filename = "", .content_type = ""},
+      {.name = "target", .content = "users", .filename = "", .content_type = ""},
+      {.name = "file", .content = csv, .filename = "users.csv", .content_type = "text/csv"},
+  };
+  auto process_res = client.Post("/api/v1/process", items);
+  ASSERT_TRUE(process_res);
+  ASSERT_EQ(process_res->status, 201);
+  auto process_parsed = nlohmann::json::parse(process_res->body);
+  EXPECT_EQ(process_parsed["type"], "user.process");
+  EXPECT_EQ(process_parsed["total_records"], 100u);
+  EXPECT_EQ(process_parsed["valid_records"], 95u);
+  EXPECT_EQ(process_parsed["invalid_records"], 5u);
+  const std::size_t valid_records = process_parsed["valid_records"].get<std::size_t>();
+  const std::string workload_id = process_parsed["id"].get<std::string>();
+  ASSERT_EQ(process_parsed["items"].size(), valid_records);
+  for (const auto& item : process_parsed["items"]) {
+    EXPECT_TRUE(item["scheduled"].get<bool>());
+  }
+
+  auto after = client.Get("/api/v1/workloads?limit=500");
+  ASSERT_TRUE(after);
+  EXPECT_EQ(nlohmann::json::parse(after->body)["workloads"].size(), workloads_before + 1)
+      << "confirm must create exactly one workload";
+
+  std::string final_status;
+  nlohmann::json final_workload;
+  for (int i = 0; i < 300; ++i) {
+    auto get_res = client.Get("/api/v1/workloads/" + workload_id);
+    ASSERT_TRUE(get_res);
+    final_workload = nlohmann::json::parse(get_res->body);
+    final_status = final_workload["status"].get<std::string>();
+    if (final_status == "succeeded" || final_status == "failed") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  EXPECT_EQ(final_status, "succeeded");
+  EXPECT_EQ(final_workload["total_items"], valid_records);
+  EXPECT_EQ(final_workload["completed_items"], valid_records);
+  EXPECT_EQ(final_workload["failed_items"], 0u);
+
+  auto items_res =
+      client.Get("/api/v1/workloads/" + workload_id + "/items?limit=" + std::to_string(valid_records));
+  ASSERT_TRUE(items_res);
+  auto items_parsed = nlohmann::json::parse(items_res->body);
+  EXPECT_EQ(items_parsed["total"], valid_records);
+  std::unordered_set<std::string> job_ids;
+  for (const auto& item : items_parsed["items"]) {
+    EXPECT_EQ(item["status"], "succeeded");
+    job_ids.insert(item["job_id"].get<std::string>());
+  }
+  EXPECT_EQ(job_ids.size(), valid_records) << "no duplicate jobs may exist for this workload";
+
+  auto users_res = client.Get("/api/v1/users?limit=" + std::to_string(valid_records));
+  ASSERT_TRUE(users_res);
+  auto users_parsed = nlohmann::json::parse(users_res->body);
+  EXPECT_GE(users_parsed["total"].get<std::size_t>(), valid_records);
 
   app->http_server().stop();
   server_thread.join();

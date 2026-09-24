@@ -6,6 +6,7 @@
 
 #include "flowforge/engine/priority_scheduler.hpp"
 #include "flowforge/handlers/builtin_handlers.hpp"
+#include "flowforge/handlers/user_process_handler.hpp"
 #include "flowforge/persistence/in_memory_repositories.hpp"
 
 namespace flowforge::services {
@@ -23,6 +24,15 @@ class WorkloadServiceTest : public ::testing::Test {
 
     handler_registry = std::make_shared<engine::HandlerRegistry>();
     std::ignore = handlers::register_builtin_handlers(*handler_registry);
+    // UserProcessHandler is registered separately (Phase 3H), exactly
+    // like the real composition root (apps/server/src/http/app.cpp) --
+    // it now takes a constructor-injected repository (it upserts into
+    // the `users` table), so it is no longer part of
+    // register_builtin_handlers. Every test in this file creates
+    // "user.process" workloads and needs the job_type to actually
+    // resolve for scheduling to succeed.
+    std::ignore = handler_registry->register_handler(std::make_shared<handlers::UserProcessHandler>(
+        std::make_shared<persistence::InMemoryUserRepository>()));
     // No IWorkerPool is wired in -- the dispatch loop only resolves the
     // handler (proving the job is routable) and stops there, exactly like
     // job_routes.cpp's own tests that don't need real execution. Jobs

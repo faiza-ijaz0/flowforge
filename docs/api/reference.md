@@ -5,10 +5,10 @@ Base path: `/api/v1`. All request/response bodies are JSON. There is no authenti
 
 This document only lists endpoints that actually exist and are wired to `apps/server`. For the full
 list of endpoints planned but not yet implemented, see the README's Roadmap section. Products,
-Categories, and the Processing Center's upload/preview/confirm endpoints are documented in their
-own architecture docs rather than duplicated here in full request/response detail — see
-`docs/architecture/product-processing.md`, `docs/architecture/category-processing.md`, and
-`docs/architecture/input-processing.md`.
+Categories, Users, and the Processing Center's upload/preview/confirm endpoints are documented in
+their own architecture docs rather than duplicated here in full request/response detail — see
+`docs/architecture/product-processing.md`, `docs/architecture/category-processing.md`,
+`docs/architecture/user-import.md`, and `docs/architecture/input-processing.md`.
 
 ## Health and observability
 
@@ -163,6 +163,35 @@ sub-count of `queued_items` (a job that failed once and is backing off before an
 still "queued" for status-derivation purposes, but distinguishably retrying); `dead_letter_items`
 is a sub-count of `failed_items` (retries exhausted, vs. an outright non-retryable failure). See
 `docs/architecture/phase-3g-audit.md` §3.2 for the full rationale.
+
+## Users
+
+Real, persisted user records (Phase 3H — see `docs/architecture/phase-3h-production-readiness.md`
+§2). Written only by `handlers::UserProcessHandler` at job-execution time; there is no
+`POST /api/v1/users` — creating one is always "confirm an import"
+(`POST /api/v1/process/confirm` or `POST /api/v1/workloads/user-imports`).
+
+### `GET /api/v1/users?limit=50&offset=0`
+Lists users in creation order. `limit` defaults to 50, capped at 200.
+```json
+{ "users": [ /* User[] */ ], "total": 95, "limit": 50, "offset": 0 }
+```
+
+### User shape
+```json
+{
+  "id": "9e2f...-uuid",
+  "name": "Alice Khan",
+  "email": "alice@example.com",
+  "phone": "555-1234",
+  "job_id": "3f9a7e2a-...-uuid",
+  "created_at": "2026-09-24T11:00:00.000Z",
+  "updated_at": "2026-09-24T11:00:00.000Z"
+}
+```
+`email` is unique (case-normalized at the application layer); re-submitting the same email updates
+the existing row in place rather than creating a duplicate or conflicting. `phone`/`job_id` are
+`null` when unset.
 
 ## Workflows
 

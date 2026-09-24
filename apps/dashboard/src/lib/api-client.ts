@@ -13,6 +13,7 @@ import type {
   ListWorkloadItemsResponse,
   ListProductsResponse,
   ListCategoriesResponse,
+  ListUsersResponse,
   ListWorkloadsResponse,
   PreviewResponse,
   ProcessingTarget,
@@ -198,4 +199,11 @@ export const apiClient = {
   // handlers::CategoryProcessHandler at job-execution time.
   listCategories: (limit = 50, offset = 0) =>
     request<ListCategoriesResponse>(`/api/v1/categories?limit=${limit}&offset=${offset}`),
+
+  // Phase 3H: the Users domain's read API, closing the persistence gap
+  // documented in docs/architecture/phase-3g-audit.md §2.4 -- same
+  // read-only shape as listProducts/listCategories. Users are written
+  // only by handlers::UserProcessHandler at job-execution time.
+  listUsers: (limit = 50, offset = 0) =>
+    request<ListUsersResponse>(`/api/v1/users?limit=${limit}&offset=${offset}`),
 };

@@ -1,33 +1,34 @@
 # FlowForge
 
-FlowForge is a job processing and workload orchestration platform: upload a CSV or an image/
-screenshot, watch it become a real workload of real jobs, dispatched through a concurrent C++
-scheduler and worker pool, persisted in PostgreSQL, and observable end-to-end from a Next.js
-dashboard. It is built around a concurrent C++ engine, a REST API, PostgreSQL persistence, and an
-operator dashboard that never shows a fabricated number.
+FlowForge is a **production-style** job processing and workload orchestration platform: upload a
+CSV or an image/screenshot, watch it become a real workload of real jobs, dispatched through a
+concurrent C++ scheduler and worker pool, persisted in PostgreSQL, and observable end-to-end from a
+Next.js dashboard. It is built around a concurrent C++ engine, a REST API, PostgreSQL persistence,
+and an operator dashboard that never shows a fabricated number.
 
-This repository is at **Phase 3G: Unified FlowForge Platform** — the phase that ties every prior
-phase's work into one coherent, navigable product rather than a set of independent features. The
-execution core (Phase 1–2B) is unchanged and still the foundation: a job dispatched by
+This repository is at **Phase 3H: Production Readiness & Final Validation**. The execution core
+(Phase 1–2B) remains the foundation and is unchanged: a job dispatched by
 `engine::PriorityScheduler` is genuinely executed — `Queued -> Running ->
 Succeeded`/`Failed`/`Retrying`/`DeadLetter`/`Cancelled` — through `HandlerRegistry`/`IJobHandler`,
 with a real `job_attempts` row persisted per attempt, cooperative cancellation/timeout, and a real,
-restart-safe retry engine (`RetryDispatcher`). On top of that, Phase 3A–3F added the **Workload**
-model (a logical grouping of jobs submitted as one unit — e.g. one CSV import), a
-source-/target-agnostic **input processing pipeline** (CSV and image/screenshot-via-OCR sources,
-crossed with Users/Products/Categories targets), and real, persisted domains for **Products** and
-**Categories** (Users validates/normalizes but has no dedicated table yet — see
-[`docs/architecture/user-import.md`](docs/architecture/user-import.md)). Phase 3G's own job was an
-audit-first hardening pass: it closed the gaps that audit found (a missing `/workloads` browse
-page, `workload_id` not exposed on a job's own JSON, no `total` on two paginated list endpoints, no
-workload-level visibility into which jobs were specifically retrying or dead-lettered) and added a
-`/health` observability page, a real dashboard home, Docker healthchecks, and consistent
-loading/empty/error handling across the dashboard — all additive, none of it a rewrite of the
-execution or persistence architecture. See
-[`docs/architecture/phase-3g-audit.md`](docs/architecture/phase-3g-audit.md) for the full
-before/after gap analysis, and [`docs/architecture/overview.md`](docs/architecture/overview.md) /
-[`docs/architecture/execution-model.md`](docs/architecture/execution-model.md) /
-[`docs/architecture/workload-model.md`](docs/architecture/workload-model.md) /
+restart-safe retry engine (`RetryDispatcher`). Phase 3A–3F added the **Workload** model (a logical
+grouping of jobs submitted as one unit — e.g. one CSV import) and a source-/target-agnostic
+**input processing pipeline** (CSV and image/screenshot-via-OCR sources, crossed with
+Users/Products/Categories targets). Phase 3G unified the dashboard into one coherent, navigable
+product. **Phase 3H (this phase)** closed the last domain-persistence gap — **Users, Products, and
+Categories are now all real, persisted domains** with their own PostgreSQL tables, repositories,
+and paginated read APIs — added real 100+ record automated acceptance coverage (CSV and real-OCR
+image sources, all three domains, against a real PostgreSQL database), found and fixed a genuine
+Windows migration-tooling bug via real fresh-database and upgrade-path testing, ran a focused
+security probe battery, measured a real performance baseline, and produced complete operational
+documentation (deployment, backup/recovery, release checklist). See
+[`docs/architecture/phase-3h-production-readiness.md`](docs/architecture/phase-3h-production-readiness.md)
+for the full report — including honestly-documented gaps (no authentication, Docker never
+runtime-validated) this phase did **not** claim to close. See also
+[`docs/architecture/phase-3g-audit.md`](docs/architecture/phase-3g-audit.md),
+[`docs/architecture/overview.md`](docs/architecture/overview.md),
+[`docs/architecture/execution-model.md`](docs/architecture/execution-model.md),
+[`docs/architecture/workload-model.md`](docs/architecture/workload-model.md), and
 [`docs/architecture/input-processing.md`](docs/architecture/input-processing.md) for what's real
 versus interface-only, and why. Workflow DAG execution is still deliberately not yet implemented.
 
@@ -111,7 +112,8 @@ flowforge/
 ├── docs/
 │   ├── architecture/           architecture overview, per-domain design docs, and phase audits
 │   ├── api/                    API reference (`reference.md`)
-│   └── development/            contributor setup guide (`getting-started.md`)
+│   ├── development/            contributor setup guide (`getting-started.md`)
+│   └── operations/             deployment, backup/recovery, release checklist
 ├── scripts/                  db-migrate.sh/.ps1 and other dev scripts
 ├── cmake/                    CompilerWarnings.cmake, Sanitizers.cmake, StaticAnalysis.cmake
 ├── CMakeLists.txt
@@ -224,10 +226,12 @@ or run the test binaries directly for more verbose GoogleTest output:
 ```
 
 By default this runs entirely against in-memory repositories — no PostgreSQL required. The
-PostgreSQL-backed integration tests (real repository tests plus a restart-persistence acceptance
-test) are opt-in and `GTEST_SKIP()` unless a test database is configured; see
+PostgreSQL-backed integration tests (real repository tests, a restart-persistence acceptance test,
+and six 100+ record bulk acceptance tests covering Users/Products/Categories × CSV/real-OCR-image —
+see `docs/architecture/phase-3h-production-readiness.md` §4) are opt-in and `GTEST_SKIP()` unless a
+test database is configured; see
 [`docs/development/getting-started.md`](docs/development/getting-started.md), "Running PostgreSQL
-integration tests".
+integration tests". As of Phase 3H: 537 engine tests + 100 server tests, all passing.
 
 ## Benchmarks
 
@@ -249,11 +253,12 @@ from `apps/dashboard/.env.example`) if the server isn't on `http://localhost:808
 
 Pages: **Overview** (`/`, real workload/job counts + `/ready` health breakdown) · **Processing
 Center** (`/processing`, upload → preview → confirm) · **Workloads** (`/workloads`,
-`/workloads/{id}`) · **Jobs** (`/jobs`, `/jobs/{id}`, with execution attempt history) · **Users**
-(`/users`, import wizard) · **Products** / **Categories** (`/products`, `/categories`, paginated
-persisted records) · **Workflows** / **Workers** (read-only) · **System health** (`/health`, live
-`GET /ready` polling) · **Metrics** (`/metrics`, raw text feed) · **Queues** / **Logs** /
-**Settings** (honest `NotYetImplemented` placeholders — no backend yet, never a fake empty state).
+`/workloads/{id}`) · **Jobs** (`/jobs`, `/jobs/{id}`, with execution attempt history) · **Users** /
+**Products** / **Categories** (`/users`, `/products`, `/categories` — import wizard plus a real,
+paginated, persisted record list for all three, since Phase 3H) · **Workflows** / **Workers**
+(read-only) · **System health** (`/health`, live `GET /ready` polling) · **Metrics** (`/metrics`,
+raw text feed) · **Queues** / **Logs** / **Settings** (honest `NotYetImplemented` placeholders — no
+backend yet, never a fake empty state).
 
 ```bash
 npm run lint:dashboard
@@ -287,7 +292,11 @@ docker compose up --build
 
 Starts PostgreSQL, the server (`:8080`), and the dashboard (`:3000`). Migrations are **not** run
 automatically (see `docs/architecture/overview.md` §7) — run `docker compose run --rm migrate`
-separately.
+separately. Both the server and dashboard images run as non-root users and have `HEALTHCHECK`
+instructions. **Docker has not been runtime-validated in this project's CI or local development** —
+only `docker compose config` (static validation) runs today; see
+[`docs/operations/deployment.md`](docs/operations/deployment.md) and the production-readiness
+report for the full, honest status.
 
 ## Code quality
 
@@ -399,8 +408,8 @@ generalizes bulk import beyond Users+CSV; `POST /api/v1/process/preview` +
 confirmation does) and image/screenshot-via-OCR as a real second input source alongside CSV. See
 [`docs/architecture/input-processing.md`](docs/architecture/input-processing.md).
 
-**Phase 3E/3F — done:** Products and Categories as real, persisted, dedicated domains (unlike
-Users) — `handlers::ProductProcessHandler`/`CategoryProcessHandler` upsert into their own tables,
+**Phase 3E/3F — done:** Products and Categories as real, persisted, dedicated domains —
+`handlers::ProductProcessHandler`/`CategoryProcessHandler` upsert into their own tables,
 with paginated read APIs (`GET /api/v1/products`, `GET /api/v1/categories`, both with `total`) and
 dashboard list pages. See
 [`docs/architecture/product-processing.md`](docs/architecture/product-processing.md) /
@@ -418,6 +427,25 @@ loading/empty/error+retry handling across list pages; an explicit "View Workload
 Return to Processing Center" path after a successful submission instead of a dead-end success
 message. See [`docs/architecture/phase-3g-audit.md`](docs/architecture/phase-3g-audit.md) for the
 full gap analysis this phase worked from.
+
+**Phase 3H (this phase) — done:** production readiness and final validation. Closed the last
+domain-persistence gap: Users gained a dedicated `users` table, repository, and
+`GET /api/v1/users` read API, mirroring Products/Categories exactly (`handlers::UserProcessHandler`
+now upserts instead of only validating/normalizing). Added real 100+ record automated acceptance
+coverage against a real PostgreSQL database for all three domains across both CSV and real-OCR
+image sources (six new/extended `ProcessRoutesBulkPostgresTest` cases). Found and fixed a real bug
+in `scripts/db-migrate.ps1` that silently reported success on every migration while applying none
+of them against a genuinely fresh Windows database — verified via real fresh-database and
+incremental-upgrade runs afterward. Ran a focused security probe battery (malformed input, SQL
+injection strings, oversized payloads, path traversal, corrupt uploads) against a live server;
+found one non-critical API-contract issue (a malformed ID returns 500 instead of 400) and
+documented it rather than rushing a cross-cutting fix. Measured a real performance baseline (100
+and 500-record CSV flows, 100-record OCR flows) with no unsupported scalability claims. Added
+`docs/operations/{deployment,backup-and-recovery,release-checklist}.md`. Explicitly documented,
+rather than silently ignored: no authentication/authorization exists, and Docker has never been
+runtime-validated (only statically). See
+[`docs/architecture/phase-3h-production-readiness.md`](docs/architecture/phase-3h-production-readiness.md)
+for the complete report.
 
 **Next phase — workflow DAG execution, stronger cancellation/timeout, more observability:**
 - Workflow execution: DAG validation (cycle detection), step sequencing, a real create-workflow

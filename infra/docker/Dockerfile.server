@@ -10,11 +10,16 @@
 # (engine/src/providers/tesseract_ocr_provider.cpp discovers
 # /usr/bin/tesseract); without it the server starts but image processing
 # reports OCR as unavailable.
+#
+# Debian trixie with clang 19, not bookworm: libstdc++ only exposes
+# std::expected (flowforge::Result) to clang >= 19, and bookworm ships
+# clang 14 -- the first CI image build failed on exactly that. The runtime
+# stage uses the same release so libpq/libstdc++ match the builder.
 
-FROM debian:bookworm-slim AS builder
+FROM debian:trixie-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        clang \
+        clang-19 \
         cmake \
         ninja-build \
         git \
@@ -30,14 +35,14 @@ COPY apps/server ./apps/server
 COPY benchmarks ./benchmarks
 
 RUN cmake -B build -G Ninja \
-        -DCMAKE_CXX_COMPILER=clang++ \
-        -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_CXX_COMPILER=clang++-19 \
+        -DCMAKE_C_COMPILER=clang-19 \
         -DCMAKE_BUILD_TYPE=Release \
         -DFLOWFORGE_BUILD_TESTS=OFF \
         -DFLOWFORGE_BUILD_BENCHMARKS=OFF \
     && cmake --build build --target flowforge_server -j
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \

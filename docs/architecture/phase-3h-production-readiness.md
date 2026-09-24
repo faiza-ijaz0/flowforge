@@ -1,8 +1,93 @@
 # Phase 3H — Production Readiness & Final Validation
 
-Status: complete. This document is both the baseline audit this phase started from and the final
-production-readiness report it produced — written as one evolving document rather than two,
-since every "final" section below is a direct answer to a "baseline" gap identified in §1.
+Status: complete, including a follow-up pass (§0) that closed gaps the first pass left open and
+corrected several of its claims. This document is both the baseline audit this phase started from
+and the final production-readiness report it produced — written as one evolving document rather
+than two, since every "final" section below is a direct answer to a "baseline" gap identified in §1.
+Where the follow-up pass found an earlier statement to be wrong, the statement is kept and marked
+**Corrected (§0)** rather than silently rewritten.
+
+---
+
+## 0. Follow-up pass (2026-09-25)
+
+The first pass (commit `e11f863`) left five gaps open in its own "Known Limitations"/"Deferred
+Work". The follow-up closed them and, along the way, found further real defects — two of which
+contradicted claims made in this document.
+
+### 0.1 Defects found and fixed
+
+| # | Defect | How it was found | Fix | Evidence |
+|---|---|---|---|---|
+| 1 | **CI had never run.** `ci.yml` triggered on `push: branches: [main]`, but the repository's branch is `master`. The public GitHub API reported `total_count: 0` workflow runs — every "CI is authoritative" statement in Phases 3G/3H (sanitizers, PostgreSQL integration, format, Docker config) described a job that had never executed. | Reading `ci.yml` against the branch name and the GitHub Actions API | Trigger on `[master, main]` plus `workflow_dispatch` | `.github/workflows/ci.yml` |
+| 2 | **Malformed IDs → HTTP 500** (the first pass's §13 finding, previously "documented, not fixed"). | First-pass security probe | `infra::is_uuid()`; all five path-ID routes (`GET /jobs/{id}`, `GET /jobs/{id}/attempts`, `POST /jobs/{id}/cancel`, `GET /workloads/{id}`, `GET /workloads/{id}/items`) return `400 validation_error` before touching the database | Re-probed against a live PostgreSQL-backed server: all six malformed requests (incl. `x' OR 1=1--`) → 400; a well-formed unknown UUID → 404; `flowforge_db_errors_total` stayed absent (0 DB errors); stderr clean. Tests: `IsUuidTest.*`, `HttpServerTest.MalformedJobIdIsRejectedWith400OnEveryJobRoute`, `WorkloadRoutesTest.MalformedWorkloadIdIsRejectedWith400` |
+| 3 | **Same-submission category hierarchies failed nondeterministically.** Sibling jobs execute in parallel, so a child's job could look up its parent before the parent's job committed and fail *permanently* (a missing parent was non-retryable). The first pass's §6 "3-level hierarchy submitted together succeeds" was a timing coincidence. | Browser run (workload `567a62e2…`): root/child/grandchild in one CSV → **1 succeeded / 3 failed**; job timestamps show `laptops` failing its lookup at `.061` while `electronics` committed at `.080` | `confirm()` marks a category payload `parent_in_submission` when its parent slug is another record of the same submission; `CategoryProcessHandler` treats *that* missing immediate parent as **retryable**, so the existing retry engine re-runs it after backoff. A parent absent from the submission still fails immediately and non-retryably, as documented. No scheduler/worker-pool change. | Same browser flow after the fix (workload `dfb031b6…`): **3 succeeded / 1 failed** (only the orphan); `laptops`/`gaming-laptops` each succeeded on attempt 2. Test `MultiLevelHierarchyInOneSubmissionSucceedsRegardlessOfRecordOrder` (records deliberately child-first) passed 15/15 repeats. |
+| 4 | **Duplicate natural keys within one submission silently collapsed.** Two records with the same SKU/slug/email became two jobs that upserted the same row; the preview reported both as valid. The Users CSV wizard already rejected in-file duplicate emails (user-import.md, "Duplicate rows"); the Processing Center did not. | Browser Categories-image run (workload `fd533b96…`): 100 jobs succeeded but only 96 rows linked to them — OCR produced the garbage slug `hhh` for 5 different rows | Preview (all three mapping functions) and confirm (independently — a caller can skip preview) reject later occurrences: "duplicate slug 'x' in this submission -- only the first occurrence is kept". Re-importing across submissions still upserts. | Browser preview now shows `Row 6: duplicate slug 'electronics-q3h' in this submission…`. Tests: `*MappingTest.RejectsDuplicate*`, `InputProcessingServiceTest.ConfirmRejectsDuplicate*` |
+| 5 | **Dashboard Docker image could not build.** `Dockerfile.dashboard` copied `apps/dashboard/public`, which does not exist in the repository (`git ls-files` → 0 matches), so the `COPY --from=builder` fails. | Static review | Removed the line | `infra/docker/Dockerfile.dashboard` |
+| 6 | **Dashboard container healthcheck would fail.** Next.js standalone binds to `$HOSTNAME`, which Docker sets to the container id; the `curl localhost:3000` healthcheck would not reach it. | Static review | `ENV HOSTNAME=0.0.0.0` | same |
+| 7 | **`NEXT_PUBLIC_API_URL` was set only at container runtime**, where it has no effect — Next.js inlines it at build time. | Static review | Build `ARG` + compose `build.args` | `Dockerfile.dashboard`, `docker-compose.yml` |
+| 8 | **Server image had no Tesseract**, so image/OCR processing would report "not supported" in Docker. | Static review (`tesseract_ocr_provider.cpp` probes `/usr/bin/tesseract`) | `tesseract-ocr` + `tesseract-ocr-eng` in the runtime stage | `Dockerfile.server` |
+| 9 | **No `.dockerignore`**: the dashboard build's `COPY . .` would copy host `node_modules` (possibly built for another OS) over the clean `npm ci` layer, plus multi-GB CMake build trees. | Static review | Added `.dockerignore` | `.dockerignore` |
+| 10 | **`FLOWFORGE_TESSERACT_PATH` undocumented.** It is read via `std::getenv` directly (not `getenv_fn` in `config.cpp`), so the first pass's grep-based "all 17 variables documented" check missed it. | Grep for every `getenv` call site | Added to `.env.example`; `FLOWFORGE_CORS_ALLOWED_ORIGIN` made an explicit, overridable compose variable | `.env.example`, `docker-compose.yml` |
+| 11 | `db-migrate.sh` could not run from Git Bash on Windows (native `psql.exe` cannot open `/c/...` paths, and MSYS rewrote the `\i` argument). | Running the new migration check locally | `cygpath -m` + `MSYS2_ARG_CONV_EXCL` in a Windows-only branch; no-op on Linux | `scripts/db-migrate.sh` |
+| 12 | `scripts/db-migrate.sh` was committed as mode `100644` (not executable), yet CI's `postgres-integration` job invokes it as `./scripts/db-migrate.sh` — that step would have failed with "Permission denied" on its first run. Hidden only because CI never ran (#1). | `git ls-files -s` while staging | Mode set to `100755` (as are the two new test scripts) | `git ls-files -s scripts/` |
+
+### 0.2 Gaps closed
+
+- **`tests/e2e` and `tests/integration` now contain runnable tests**, both wired into CI:
+  `tests/integration/check-migrations.sh` (fresh apply, schema/constraint/FK/index assertions,
+  idempotent re-run, and a deliberately broken migration that must abort non-zero, unrecorded, with
+  no partial DDL) and `tests/e2e/smoke-test.py` (black-box HTTP smoke test of a running stack).
+  The migration check is not vacuous: a fake runner reproducing the original `.ps1` bug (prints
+  "done: 16 migration(s) applied", applies nothing) fails it. Both real runners pass it locally
+  (`db-migrate.sh` via Git Bash, `db-migrate.ps1` via PowerShell).
+- **Docker runtime validation is now a CI job** (`docker-validate`): `docker compose build`, start
+  PostgreSQL, run the `migrate` service, `up --wait` server + dashboard (their healthchecks must
+  pass), then `smoke-test.py --ocr --dashboard-url` against the containers. **Docker is still not
+  installed in this development environment, so none of this has been run locally.** It first runs
+  on the first CI run on `master` after this commit; that outcome is not recorded in this document
+  because it postdates it.
+- **All six flows browser-verified** (§0.3) — the first pass verified only the three CSV flows.
+
+### 0.3 Browser verification (follow-up)
+
+A real Chrome session against a locally built `flowforge_server` (PostgreSQL `flowforge` database,
+Tesseract OCR) and the dashboard. Files were uploaded through the real `<input type=file>`.
+**Method note:** the automation tool's synthesized pointer clicks did not land on the target/source
+toggle buttons (its screenshot coordinate frame was 1568 px wide for a 1280 px viewport) — the same
+"flakiness" the first pass reported. Inspecting the DOM showed the page fully hydrated, and
+`element.click()` changed React state normally, so the buttons were driven with DOM `click()`,
+which invokes the same React `onClick` handlers a user's click does. This is not a dashboard defect.
+
+| Flow | Preview (browser) | Workloads during preview | Confirm → workload | Jobs | Execution | PostgreSQL | UI list page |
+|---|---|---|---|---|---|---|---|
+| Products image (`products_bulk_100.png`) | 100 records, 100 valid, 0 invalid, ~85% OCR confidence | 22 → 22 | `9508e65f…` | 100 (100 distinct) | 100 succeeded, 0 failed | 100 `products` rows linked to the workload's jobs | `/products` row `PROD100` links to job `8525cd97…`, which PostgreSQL confirms is in `9508e65f…` |
+| Categories image (`categories_bulk_100.png`) | 100 records, 100 valid, 0 invalid, ~64% confidence (low-confidence warning shown) | 23 → 23 | `fd533b96…` | 100 (100 distinct) | 100 succeeded, 0 failed | 96 rows: 5 records shared the OCR slug `hhh` → defect #4 | `/categories` shows `category-003` ("Category 0@3", an OCR-misread name) |
+| Users image (`user_table_bulk_100.png`) | 100 records, 97 valid, 3 invalid (rows 20/40/100: OCR-garbled email), ~77% confidence | 27 → 27 | `bb165541…` | 97 (97 distinct) | 97 succeeded, 0 failed | `users` 95 → 192 (+97), 97 rows linked to the workload's jobs | `/users` row `personl@example.com` links to job `7ec7091e…`, in `bb165541…` |
+| Categories hierarchy CSV, before fix #3 | 4 valid, 3 invalid (row 4 self-parent, row 6 in-file duplicate slug, row 7 blank name) | 24 → 24 | `567a62e2…` | 4 | **1 succeeded, 3 failed** (race) | only the root persisted | — |
+| Categories hierarchy CSV, after fix #3 | same 4 valid / 3 invalid | 25 → 25 | `dfb031b6…` | 4 | 3 succeeded, 1 failed (orphan: "parent category 'does-not-exist-q3h' does not exist") | root / child / grandchild persisted with correct `parent_slug` | `/categories` shows all three with their parents |
+| Duplicate slug across submissions (upsert) | 1 valid | — | `e1b069e3…` | 1 | 1 succeeded | `electronics-q3h` renamed in place: still 1 row, `updated_at` > `created_at` | `/categories` shows the new name |
+
+The Products-image SKUs had first been inserted minutes earlier by a `smoke-test.py --ocr` run
+against the same database, so the browser run upserted those 100 rows (re-linking each to its new
+job) rather than growing the table; the `/products` total (697) did not change because of it.
+
+**OCR data quality (observed, not fixed):** OCR misreads that still pass validation become "valid"
+records — `PRODS` for `PROD5`, `Knife1e` for `Knife10`, `personl@example.com` for
+`person1@example.com`, `Category 0@3` for `Category 003`. They are visible in the preview table,
+which is the only review step before they are persisted. See Known Limitations.
+
+### 0.4 Test counts (follow-up)
+
+| Suite | Count | Result |
+|---|---|---|
+| `flowforge_engine_tests` (`FLOWFORGE_TEST_DATABASE_URL` → real PostgreSQL, Tesseract present) | 547 | 547 passed, 0 failed, 0 skipped |
+| `flowforge_server_tests` (same) | 103 | 103 passed, 0 failed, 0 skipped |
+| **Total backend** | **650** | **650 passed** (637 before this pass, +13 new) |
+| `tests/integration/check-migrations.sh` | 7 checks × 2 runners | passed (bash and PowerShell runners, disposable scratch schemas) |
+| `tests/e2e/smoke-test.py --ocr` against a local PostgreSQL-backed server | 4 checks | passed |
+| Dashboard `eslint .` / `tsc --noEmit` / `next build` | — | clean / clean / 17 routes compiled |
+| `clang-format --dry-run --Werror` (local clang-format 19.1.1) | all `.cpp`/`.hpp` | clean |
 
 ---
 
@@ -167,9 +252,10 @@ real server, real PostgreSQL, not a mock:
 
 - **Root category**: `Electronics` (no parent) → succeeded.
 - **Child**: `Laptops` (parent=`electronics`) → succeeded, submitted in the *same batch* as its parent.
-- **Multi-level (grandchild)**: `Gaming Laptops` (parent=`laptops`) → succeeded, also same batch —
-  demonstrating the system correctly resolves a full 3-level hierarchy submitted together, not just
-  when parents are pre-existing.
+- **Multi-level (grandchild)**: `Gaming Laptops` (parent=`laptops`) → succeeded, also same batch.
+  **Corrected (§0, defect #3):** this outcome depended on job timing; nothing guaranteed
+  parent-before-child. The follow-up reproduced the opposite outcome in the browser
+  (1 succeeded / 3 failed) and fixed it; same-submission hierarchies now resolve via retry.
 - **Self-parent**: rejected **at confirm time** (`"a category cannot be its own parent"`) — never
   became a job.
 - **Missing parent**: accepted at confirm time, **failed at job execution** with
@@ -281,6 +367,11 @@ Static validation performed instead:
   ordering, and environment variable wiring reviewed line-by-line — no changes needed for the Users
   addition (no new service, no new port, no new environment variable).
 
+**Corrected (§0, defects #5–#9):** the static review above missed five real defects, including one
+that makes the dashboard image unbuildable (`COPY` of a non-existent `public/` directory). All are
+fixed in the follow-up, and CI's `docker-validate` job now builds, starts, and smoke-tests the
+stack.
+
 **A real gap was found and is honestly documented, not fixed (out of scope for local static
 review): neither this environment nor CI actually starts the Docker stack.** CI's `docker-validate`
 job only runs `docker compose config --quiet` (schema/interpolation validation) — it has never
@@ -294,7 +385,9 @@ below.
 ## 11. Production configuration
 
 Every environment variable the server actually reads (`grep -oP 'getenv_fn\("\K[^"]+' engine/src/infra/config.cpp`,
-17 results) is present and documented in `.env.example` — no gaps found, no changes needed.
+17 results) is present and documented in `.env.example`. **Corrected (§0, defect #10):** that grep
+only covered `config.cpp`; `FLOWFORGE_TESSERACT_PATH` is read with `std::getenv` in the OCR provider
+and was undocumented until the follow-up.
 `.env.example` contains only placeholder local-dev credentials (`flowforge`/`flowforge`), clearly
 labeled as such; `.gitignore` already excludes real `.env` files. `AppConfig::load` already refuses
 to start in `staging`/`production` without `FLOWFORGE_DATABASE_URL` set (verified via
@@ -350,8 +443,8 @@ PostgreSQL itself rejects the cast, which the existing error-mapping layer class
 error. This is **not a security vulnerability** — no information leak (the response is the same
 generic scrubbed message every 5xx gets), no crash, no injection, bounded resource use — but it is
 an API-contract robustness issue (a malformed client ID should ideally be a 400, not a 500).
-Deliberately **not fixed** this phase: doing so correctly would mean adding UUID-shape validation
-across every ID-accepting route (jobs, workloads, products would need it too if they exposed a
+**Fixed in the follow-up pass (§0, defect #2).** Original rationale for deferring, kept for the
+record: doing so correctly would mean adding UUID-shape validation across every ID-accepting route (jobs, workloads, products would need it too if they exposed a
 similar lookup), which is more surface area than a "fix only verified issues" pass should absorb
 this late without full re-test coverage. Documented here and in "Known Limitations".
 
@@ -471,6 +564,12 @@ each have their own counter, not folded into a generic "failed").
 
 ## 18. CI/CD audit
 
+**Corrected (§0, defect #1): none of the jobs below had ever run** — the workflow triggered only on
+pushes to `main`, and this repository's branch is `master` (GitHub reported 0 workflow runs). The
+job-by-job review below describes what the jobs *would* do. The follow-up fixed the trigger, added
+the migration check to `postgres-integration`, and turned `docker-validate` into a real build +
+runtime smoke test.
+
 `.github/workflows/ci.yml` reviewed job-by-job. All six jobs are real and none silently skip a
 critical test:
 
@@ -540,23 +639,24 @@ acceptance test, not a scratch file.
 | `clang-format --dry-run --Werror` | all `.cpp`/`.hpp` under `engine`, `apps/server`, `benchmarks` | clean |
 
 These counts were produced by an actual `ctest`/direct-binary run this session (not estimated) —
-see the commit's final verification pass for the exact command output.
+see the commit's final verification pass for the exact command output. **Superseded by §0.4**
+(650 passing after the follow-up).
 
 ## 25. Final end-to-end matrix
 
 | Flow | Input | Records | Preview | Confirm | Jobs | Execution | PostgreSQL | UI |
 |---|---|---|---|---|---|---|---|---|
 | Users CSV | CSV | 100 (95 valid) | ✓ browser + automated | ✓ browser + automated | ✓ | ✓ 95/95 succeeded | ✓ 95 rows persisted | ✓ browser-verified |
-| Users Image | PNG (real OCR) | 100 | ✓ automated only | ✓ automated only | ✓ | ✓ automated | ✓ automated | NOT VERIFIED in browser this phase — automated coverage only (see §7) |
+| Users Image | PNG (real OCR) | 100 (97 valid, 3 invalid) | ✓ browser (follow-up) + automated | ✓ browser + automated | ✓ 97 | ✓ 97/97 succeeded | ✓ 97 rows (users 95 → 192) | ✓ browser-verified (follow-up, §0.3) |
 | Products CSV | CSV | 100 (95 valid) | ✓ browser + automated | ✓ browser + automated | ✓ | ✓ 95/95 succeeded | ✓ browser-confirmed (597 total) | ✓ browser-verified |
-| Products Image | PNG (real OCR) | 100 | ✓ automated only | ✓ automated only | ✓ | ✓ automated | ✓ automated | NOT VERIFIED in browser this phase — automated coverage only |
-| Categories CSV | CSV | 100 (95 valid) | ✓ browser + automated | ✓ browser + automated | ✓ | ✓ 95/95 succeeded | ✓ automated + hierarchy verified via direct API | ✓ browser-verified (volume); hierarchy sub-cases via direct API, not browser click flow (§6) |
-| Categories Image | PNG (real OCR) | 100 | ✓ automated only | ✓ automated only | ✓ | ✓ automated | ✓ automated | NOT VERIFIED in browser this phase — automated coverage only |
+| Products Image | PNG (real OCR) | 100 (100 valid) | ✓ browser (follow-up) + automated | ✓ browser + automated | ✓ 100 | ✓ 100/100 succeeded | ✓ 100 rows linked (upserted, see §0.3) | ✓ browser-verified (follow-up, §0.3) |
+| Categories CSV | CSV | 100 (95 valid) | ✓ browser + automated | ✓ browser + automated | ✓ | ✓ 95/95 succeeded | ✓ automated; hierarchy verified in browser (follow-up) | ✓ browser-verified (volume, first pass); hierarchy cases browser-verified in the follow-up (§0.3) |
+| Categories Image | PNG (real OCR) | 100 (100 valid) | ✓ browser (follow-up) + automated | ✓ browser + automated | ✓ 100 | ✓ 100/100 succeeded | ✓ 96 distinct slugs (5 OCR duplicates → defect #4, now rejected at preview) | ✓ browser-verified (follow-up, §0.3) |
 
-"Automated only" rows are genuinely, currently automated-and-passing (§4) — they are not marked
-"NOT VERIFIED" as a whole, only the *browser* UI layer specifically was not re-driven for the image
-sources this phase (CSV already proved the UI→API wiring; OCR quality is identical regardless of
-upload path). No "existing automated test" was reworded as "browser verified" anywhere in this
+The CSV rows' browser runs are from the first pass; the image rows and the hierarchy cases are from
+the follow-up (§0.3). The first pass's reasoning for skipping image flows in the browser ("OCR
+quality is identical regardless of upload path, so the browser adds no signal") was wrong in
+practice: the Categories-image browser run is what exposed defect #4. No "existing automated test" was reworded as "browser verified" anywhere in this
 document.
 
 ## 26. Release checklist
@@ -575,6 +675,12 @@ produced complete operational documentation (deployment, backup/recovery, releas
 architecture was rewritten; every change was additive, following patterns already proven twice in
 this codebase.
 
+The follow-up pass (§0) found that CI had never run (wrong branch trigger), fixed two data-integrity
+defects that only real browser runs exposed (a same-submission category-hierarchy race and silently
+collapsed in-submission duplicate keys), fixed the malformed-ID → 500 finding, fixed five Docker
+defects (one made the dashboard image unbuildable), and put runnable tests in `tests/integration`
+and `tests/e2e`, with CI now running them plus a real Docker build + runtime smoke test.
+
 ### Architecture Status
 
 Unchanged from Phase 3G: C++ scheduler, worker pool, retry engine, PostgreSQL persistence, workload
@@ -585,13 +691,17 @@ addition, and it is a peer of the existing Product/Category persistence, not a n
 
 All three input domains (Users, Products, Categories) now have dedicated PostgreSQL tables with
 real repositories, real migrations, real indexes, real uniqueness constraints, and real paginated
-read APIs. Verified via 637 passing tests plus live browser/API sessions this phase.
+read APIs. Verified via 650 passing tests (§0.4) plus live browser/API sessions. Duplicate natural
+keys within one submission are now rejected instead of silently collapsing onto one row (§0,
+defect #4).
 
 ### Input Processing Status
 
 Unchanged and confirmed working end-to-end for CSV and real-OCR-image sources across all three
 domains, including deterministic 100+ record reconciliation and category hierarchy edge cases
-(root/child/multi-level/self-parent/missing-parent/duplicate-slug), all verified this phase.
+(root/child/multi-level/self-parent/missing-parent/duplicate-slug). The multi-level case only
+became reliable in the follow-up (§0, defect #3); all six source × target flows and every hierarchy
+case are browser-verified (§0.3).
 
 ### Reliability Status
 
@@ -602,23 +712,24 @@ scale this phase.
 ### Security Status
 
 Baseline remains solid (parameterized SQL, magic-byte validation, bounded uploads/payloads,
-exact-match CORS, no secret leakage). One non-critical finding (malformed UUID → 500 instead of
-400) documented, not fixed, with explicit rationale. No authentication/authorization exists —
+exact-match CORS, no secret leakage). The one probe finding (malformed UUID → 500 instead of 400)
+is fixed and re-verified against a live PostgreSQL-backed server (§0, defect #2). No authentication/authorization exists —
 explicitly documented as an assumed-trusted-environment deployment model, not silently omitted.
 
 ### Testing Status
 
-637 backend tests passing (0 failed), dashboard lint/typecheck/build clean, `clang-format` clean.
-Six 100+ record bulk acceptance tests against real PostgreSQL (and real Tesseract OCR for image
-sources) all passing.
+650 backend tests passing (0 failed, 0 skipped, against real PostgreSQL with Tesseract present),
+dashboard lint/typecheck/build clean, `clang-format` clean (§0.4). Six 100+ record bulk acceptance
+tests against real PostgreSQL (and real Tesseract OCR for image sources) all passing. New runnable
+tests in `tests/integration` (migration runner check) and `tests/e2e` (black-box stack smoke test).
 
 ### E2E Status
 
-Real browser verification performed for Users/Products/Categories CSV flows at 100+ record scale,
-including persisted-data confirmation in the dashboard UI. Category hierarchy edge cases verified
-via direct API calls to the same endpoint the UI uses (browser click automation was flaky on the
-target-selector control this session — documented honestly rather than claimed). Image/OCR flows
-verified by automated test only, not re-driven through the browser this phase.
+All six flows (Users/Products/Categories × CSV/image) are browser-verified at 100-record scale with
+persisted-data confirmation in PostgreSQL and on the dashboard list pages — CSV in the first pass,
+image/OCR in the follow-up — plus every category-hierarchy case in the browser (§0.3). Toggle
+buttons were driven with DOM `click()` because the automation tool's pointer clicks missed them;
+see the method note in §0.3.
 
 ### Performance Baseline
 
@@ -627,15 +738,18 @@ all three domains (§14). No scalability claims beyond what was measured.
 
 ### Docker Status
 
-Docker remains unavailable in this environment (confirmed, not assumed). Static validation
-performed on both Dockerfiles and docker-compose.yml. A real, honestly-documented gap: neither this
-environment nor CI has ever performed runtime Docker validation (container build, startup,
-healthcheck) — only static config parsing.
+Docker remains unavailable in this environment (confirmed, not assumed). **Docker runtime validation
+unavailable in this environment.** The follow-up's static review found and fixed five defects the
+first review missed (§0, #5–#9), and CI's `docker-validate` job now builds both images, starts the
+stack with migrations, waits for the healthchecks, and runs the smoke test (with OCR) against the
+containers. That job's first run happens after this document was written.
 
 ### CI/CD Status
 
-All six CI jobs reviewed and confirmed to not silently skip critical coverage; every skip is
-explicit and message-carrying. No CI configuration was weakened or changed this phase.
+The workflow had never run: it triggered on `main`, and the branch is `master` (§0, defect #1).
+The follow-up fixed the trigger, added the migration-runner check to `postgres-integration`, and
+replaced the config-only Docker job with a build + runtime smoke test. No check was weakened or
+removed. Every job's first real execution is on the follow-up commit.
 
 ### Deployment Status
 
@@ -649,36 +763,37 @@ metrics needed or added.
 
 ### Known Limitations
 
-- Malformed (non-UUID) IDs return HTTP 500 instead of 400 on lookup routes (§13) — safe, not fixed.
 - No authentication/authorization anywhere — by design, documented (§12).
-- Docker has never been runtime-validated, locally or in CI — only static config validation exists
-  (§10, §18).
-- `db-migrate.ps1` bug fixed this phase, but had no test coverage before or after (no automated
-  test exercises the migration *scripts* themselves, only that migrations are already applied to
-  the test database by the time tests run) — a genuine gap in guarding against a regression of the
-  same class of bug.
-- Category hierarchy browser-click verification was blocked by UI automation flakiness this
-  session; verified via direct API instead (§6, §25) — the underlying dashboard behavior was not
-  independently re-confirmed by a human or a stable automated click flow.
+- Docker runtime validation exists only as a CI job (§0.2). Docker is not installed in this
+  development environment, so it has never been run locally; until that job has run green on
+  `master`, treat the Docker images as unverified.
+- CI never executed before the follow-up (§0, defect #1). Every job — sanitizers and the
+  PostgreSQL integration job included — runs for the first time on the follow-up commit, and a
+  first run of a never-executed workflow may surface environment issues (e.g. Ubuntu clang vs. the
+  local MinGW GCC toolchain).
+- OCR misreads that remain syntactically valid are accepted as valid records (§0.3). The preview
+  table is the only review step; no confidence threshold blocks a confirm.
+- Same-submission category parents are resolved by retrying the child (§0, defect #3). A chain
+  deeper than the job's retry budget (default 3 attempts) could, with worst-case timing, still end
+  in `dead_letter` at its deepest levels; importing deep hierarchies level by level avoids this.
+- A job that succeeds on a retry keeps the previous attempt's `last_error` text (seen on the
+  hierarchy run's retried jobs). The status is correct; the leftover message can mislead.
 - No distributed/multi-instance deployment story (`LocalWorkerPool`/`RetryDispatcher` remain
   single-process) — unchanged from prior phases, explicitly out of this phase's scope per the brief.
 
 ### Deferred Work
 
-- UUID-shape request validation across ID-accepting routes (would fix the malformed-UUID-→-500
-  finding properly, but is broader surface area than this phase's "fix only verified issues" scope).
-- Real Docker runtime validation (needs a Docker-capable CI runner or local environment — neither
-  was available this phase).
-- A dedicated test for `db-migrate.ps1`/`db-migrate.sh` themselves (e.g. a CI job that runs the
-  script against a throwaway database and asserts the resulting schema, catching exactly the class
-  of bug found this phase before it reaches a developer).
+- Clearing `last_error` when a retried job succeeds (see Known Limitations).
+- A minimum OCR-confidence gate at confirm time, if OCR-imported data must be trusted without
+  human review.
 - Authentication/authorization, if FlowForge is ever deployed outside a trusted network.
 
 ### Final Recommendation
 
-FlowForge is **production-style** and demonstrably portfolio-grade: correct, reliable, tested (637
-passing backend tests plus real 100+ record acceptance at the database level), reasonably secure
-for a trusted-environment deployment, observable, and documented. It is **not** "fully production
-ready" in the unqualified sense — it has no authentication, has never been Docker-runtime-validated,
-and runs on a single-process worker pool. Anyone deploying it outside a trusted, private network, or
+FlowForge is **production-style** and portfolio-grade: tested (650 passing backend tests plus real
+100+ record acceptance at the database level and in the browser), reasonably secure for a
+trusted-environment deployment, observable, and documented. It is **not** "fully production ready"
+in the unqualified sense: it has no authentication; its Docker images and its CI pipeline have not
+yet completed a run (both first run on the follow-up commit); and it runs on a single-process
+worker pool. Anyone deploying it outside a trusted, private network, or
 at a scale requiring distributed workers, must treat those as explicit prerequisites, not assumptions.

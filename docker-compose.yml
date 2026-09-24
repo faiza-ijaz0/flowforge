@@ -33,6 +33,7 @@ services:
       FLOWFORGE_WORKER_COUNT: ${FLOWFORGE_WORKER_COUNT:-4}
       FLOWFORGE_LOG_LEVEL: ${FLOWFORGE_LOG_LEVEL:-info}
       FLOWFORGE_STRUCTURED_LOGGING: "true"
+      FLOWFORGE_CORS_ALLOWED_ORIGIN: ${FLOWFORGE_CORS_ALLOWED_ORIGIN:-http://localhost:3000}
     ports:
       - "8080:8080"
     healthcheck:
@@ -63,11 +64,14 @@ services:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.dashboard
+      # Build-time, not runtime: Next.js inlines NEXT_PUBLIC_* into the
+      # client bundle (see Dockerfile.dashboard). This is the URL the
+      # *browser* calls, so it must be reachable from the user's machine.
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
     restart: unless-stopped
     depends_on:
       - server
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8080
     ports:
       - "3000:3000"
     healthcheck:

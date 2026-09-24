@@ -82,5 +82,19 @@ TEST(CategoryMappingTest, EmptyInputProducesEmptyOutput) {
   EXPECT_TRUE(mapped.rejected_records.empty());
 }
 
+TEST(CategoryMappingTest, RejectsDuplicateSlugWithinOneSubmissionKeepingTheFirst) {
+  // Two different names that normalize to the same slug -- exactly what
+  // OCR noise produced in the Phase 3H follow-up browser run ("hhh" x5).
+  auto mapped = map_structured_records_to_categories({record_from({{"name", "Home Garden"}}),
+                                                      record_from({{"name", "home-garden"}}),
+                                                      record_from({{"name", "Toys"}})});
+  ASSERT_EQ(mapped.valid_records.size(), 2u);
+  EXPECT_EQ(mapped.valid_records[0].name, "Home Garden");
+  EXPECT_EQ(mapped.valid_records[1].slug, "toys");
+  ASSERT_EQ(mapped.rejected_records.size(), 1u);
+  EXPECT_EQ(mapped.rejected_records[0].index, 2u);
+  EXPECT_NE(mapped.rejected_records[0].reason.find("duplicate slug 'home-garden'"), std::string::npos);
+}
+
 }  // namespace
 }  // namespace flowforge::services

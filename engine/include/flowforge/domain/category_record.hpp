@@ -77,6 +77,13 @@ struct NormalizedCategoryRecord {
 /// `parent_slug` omitted entirely when unset (mirrors
 /// `serialize_product_record_as_job_payload`'s "no JSON library in
 /// engine/" rationale): hand-rolled, not `nlohmann::json`.
-[[nodiscard]] std::string serialize_category_record_as_job_payload(const NormalizedCategoryRecord& record);
+///
+/// `parent_in_submission` adds `"parent_in_submission":"true"`: set by
+/// `InputProcessingService::confirm()` when `parent_slug` names another
+/// record of the same submission, so `CategoryProcessHandler` treats a
+/// not-yet-persisted parent as retryable (sibling jobs execute in
+/// parallel, so the parent's job may simply not have committed yet).
+[[nodiscard]] std::string serialize_category_record_as_job_payload(const NormalizedCategoryRecord& record,
+                                                                   bool parent_in_submission = false);
 
 }  // namespace flowforge::domain

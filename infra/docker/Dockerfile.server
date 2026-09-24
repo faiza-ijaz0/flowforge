@@ -5,7 +5,11 @@
 # dependencies via CMake FetchContent at build time, so this image needs
 # network access during `docker build` (not at runtime). The final image
 # contains only the built binary and its runtime shared-library
-# dependencies, not a compiler toolchain.
+# dependencies, not a compiler toolchain. The runtime image also carries
+# the Tesseract CLI, which image/OCR processing invokes as a subprocess
+# (engine/src/providers/tesseract_ocr_provider.cpp discovers
+# /usr/bin/tesseract); without it the server starts but image processing
+# reports OCR as unavailable.
 
 FROM debian:bookworm-slim AS builder
 
@@ -39,6 +43,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         libpq5 \
+        tesseract-ocr \
+        tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --shell /usr/sbin/nologin flowforge
 

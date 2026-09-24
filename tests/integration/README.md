@@ -1,7 +1,34 @@
 # tests/integration
 
-This directory intentionally contains no test binary of its own. FlowForge's real integration
-coverage — API endpoint → service → real PostgreSQL, exercised through the actual composition root
+## `check-migrations.sh` (this directory, runs in CI)
+
+Validates the migration runner and the migrations themselves against a disposable, empty
+PostgreSQL database (it refuses to run against one that already has `schema_migrations`):
+
+1. fresh apply -- every `database/migrations/*.sql` applied and recorded, in order;
+2. schema -- all 12 domain tables, the natural-key unique constraints (`sku`/`slug`/`email`), 8
+   foreign-key `ON DELETE` rules, and the expected indexes actually exist;
+3. idempotency -- a re-run applies 0 migrations;
+4. failure path -- a deliberately broken migration makes the runner exit non-zero, is not
+   recorded, and leaves no partial DDL behind.
+
+Step 4 guards the class of bug Phase 3H found in `scripts/db-migrate.ps1` (it printed "done: 16
+migration(s) applied" while applying none). A fake runner reproducing that bug was confirmed to
+fail this check. Either runner can be checked:
+
+```bash
+FLOWFORGE_CHECK_DATABASE_URL=postgres://.../empty_db tests/integration/check-migrations.sh
+# Windows runner (from the repo root):
+MIGRATE_CMD="powershell -NoProfile -File scripts/db-migrate.ps1" \
+  FLOWFORGE_CHECK_DATABASE_URL=... tests/integration/check-migrations.sh
+```
+
+Without `CREATEDB` privilege, point it at an empty scratch schema instead:
+`...?options=-csearch_path%3Dsome_empty_schema` (all lookups follow `current_schema()`).
+
+## GoogleTest/CTest integration coverage
+
+The rest of FlowForge's real integration coverage — API endpoint → service → real PostgreSQL, exercised through the actual composition root
 (`App::create`), not mocks — already exists and is wired into the normal CTest/CI run:
 
 - **`apps/server/tests/*.cpp`** — HTTP-level integration tests. Every route file has a
@@ -34,9 +61,12 @@ coverage — API endpoint → service → real PostgreSQL, exercised through the
 | Confirm persists | `ProcessRoutesTest.ConfirmCreatesARealWorkloadFromSubmittedRecords` and the domain-specific `Confirm*Persists*` tests |
 | Users processing | `engine/tests/handlers/user_process_handler_test.cpp`, `apps/server/tests/user_import_routes_test.cpp`, `ProcessRoutesTest.CsvUsersPersistsRealUsersAfterExecution` |
 | Products processing | `engine/tests/handlers/product_process_handler_test.cpp`, `ProcessRoutesTest.ConfirmCsvProductsCreatesOneWorkloadAndPersistsRealProducts` |
-| Categories processing | `engine/tests/handlers/category_process_handler_test.cpp`, `ProcessRoutesTest.ConfirmCsvCategoriesCreatesOneWorkloadAndPersistsRealCategories`, plus the hierarchy tests (`ConfirmCategoryWithValidPreexistingParentSucceeds`, `ConfirmCategoryWithMissingParentIsAcceptedAtConfirmButFailsAsAJob`, and `domain::` tests `SelfParentIsRejected`/`DeeperCyclicParentChainIsRejected`/`MultiLevelParentChainIsAccepted`) |
+| Categories processing | `engine/tests/handlers/category_process_handler_test.cpp`, `ProcessRoutesTest.ConfirmCsvCategoriesCreatesOneWorkloadAndPersistsRealCategories`, plus the hierarchy tests (`MultiLevelHierarchyInOneSubmissionSucceedsRegardlessOfRecordOrder`, `ConfirmCategoryWithValidPreexistingParentSucceeds`, `ConfirmCategoryWithMissingParentIsAcceptedAtConfirmButFailsAsAJob`, and `domain::` tests `SelfParentIsRejected`/`DeeperCyclicParentChainIsRejected`/`MultiLevelParentChainIsAccepted`) |
 
-A separate `tests/integration` binary would duplicate this coverage under a different name for no
+| Malformed IDs -> 400 | `HttpServerTest.MalformedJobIdIsRejectedWith400OnEveryJobRoute`, `WorkloadRoutesTest.MalformedWorkloadIdIsRejectedWith400`, `IsUuidTest.*` |
+| In-submission duplicate keys | `*MappingTest.RejectsDuplicate*WithinOneSubmissionKeepingTheFirst`, `InputProcessingServiceTest.ConfirmRejectsDuplicate*` |
+
+A separate `tests/integration` C++ binary would duplicate this coverage under a different name for no
 benefit — GoogleTest/CTest already is the project's integration-test tooling (see the phase brief's
 "prefer existing project tooling"); this directory exists so the coverage map above has a stable,
 discoverable home rather than requiring a `grep` across the tree.

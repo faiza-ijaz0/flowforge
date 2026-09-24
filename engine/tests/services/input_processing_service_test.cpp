@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <tuple>
 #include <utility>
 
@@ -336,6 +337,68 @@ TEST_F(InputProcessingServiceTest, ConfirmRevalidatesRecordsRatherThanTrustingTh
   ASSERT_EQ(result->rejected_records.size(), 1u);
   EXPECT_EQ(result->rejected_records[0].index, 2u);
   EXPECT_EQ(result->workload.total_items(), 1u);
+}
+
+TEST_F(InputProcessingServiceTest, ConfirmRejectsDuplicateNaturalKeysWithinOneSubmission) {
+  // Enforced at confirm too, not only preview: a caller can confirm records
+  // that never went through preview. Same normalized email, different case.
+  ConfirmRequest request{
+      .target = domain::ProcessingTarget::Users,
+      .records = {user_record("Ali", "ali@example.com"), user_record("Sara", "sara@example.com"),
+                  user_record("Ali Two", "ALI@example.com")}};
+  auto result = service->confirm(request);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_EQ(result->total_records, 3u);
+  EXPECT_EQ(result->valid_records, 2u);
+  EXPECT_EQ(result->invalid_records, 1u);
+  ASSERT_EQ(result->rejected_records.size(), 1u);
+  EXPECT_EQ(result->rejected_records[0].index, 3u);
+  EXPECT_NE(result->rejected_records[0].reason.find("duplicate key 'ali@example.com'"), std::string::npos);
+  EXPECT_EQ(result->workload.total_items(), 2u);
+}
+
+TEST_F(InputProcessingServiceTest, ConfirmRejectsDuplicateCategorySlugsWithinOneSubmission) {
+  auto category = [](std::string_view name) {
+    domain::StructuredRecord record;
+    record.fields.emplace("name", name);
+    return record;
+  };
+  ConfirmRequest request{.target = domain::ProcessingTarget::Categories,
+                         .records = {category("hhh"), category("Books"), category("hhh"), category("HHH")}};
+  auto result = service->confirm(request);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_EQ(result->valid_records, 2u);
+  EXPECT_EQ(result->invalid_records, 2u);
+  EXPECT_EQ(result->workload.total_items(), 2u);
+}
+
+TEST_F(InputProcessingServiceTest, ConfirmMarksOnlyChildrenWhoseParentIsInTheSameSubmission) {
+  auto category = [](std::string_view name, std::optional<std::string_view> parent = std::nullopt) {
+    domain::StructuredRecord record;
+    record.fields.emplace("name", name);
+    if (parent) {
+      record.fields.emplace("parent_slug", *parent);
+    }
+    return record;
+  };
+  ConfirmRequest request{.target = domain::ProcessingTarget::Categories,
+                         .records = {category("Laptops", "electronics"), category("Electronics"),
+                                     category("Orphan", "not-in-this-submission")}};
+  auto result = service->confirm(request);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  ASSERT_EQ(result->valid_records, 3u);
+
+  auto jobs = job_repository->list_by_workload_id(result->workload.id(), 10, 0);
+  ASSERT_TRUE(jobs.has_value());
+  ASSERT_EQ(jobs->size(), 3u);
+  for (const auto& job : *jobs) {
+    const bool flagged = job.payload().find(R"("parent_in_submission":"true")") != std::string::npos;
+    if (job.payload().find(R"("slug":"laptops")") != std::string::npos) {
+      EXPECT_TRUE(flagged) << job.payload();
+    } else {
+      EXPECT_FALSE(flagged) << job.payload();
+    }
+  }
 }
 
 TEST_F(InputProcessingServiceTest, ConfirmSupportsEveryDeclaredProcessingTarget) {

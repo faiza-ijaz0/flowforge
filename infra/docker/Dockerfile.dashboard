@@ -11,6 +11,11 @@ WORKDIR /src
 COPY --from=deps /src/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# NEXT_PUBLIC_* values are inlined into the client bundle at build time, so
+# the API URL the browser calls must be a build argument -- setting it only
+# as a runtime container env var has no effect on already-built bundles.
+ARG NEXT_PUBLIC_API_URL=http://localhost:8080
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 RUN npm run build --workspace=apps/dashboard
 
 FROM node:22-bookworm-slim AS runtime
@@ -21,13 +26,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --shell /usr/sbin/nologin dashboard
 
-COPY --from=builder /src/apps/dashboard/public ./apps/dashboard/public
 COPY --from=builder /src/apps/dashboard/.next/standalone ./
 COPY --from=builder /src/apps/dashboard/.next/static ./apps/dashboard/.next/static
 
 USER dashboard
 EXPOSE 3000
 ENV PORT=3000
+# The standalone server binds to $HOSTNAME, which Docker sets to the
+# container id (resolving to the container's network IP only) -- that would
+# make the localhost HEALTHCHECK below fail. Bind all interfaces instead.
+ENV HOSTNAME=0.0.0.0
 
 # The Next.js server responds to any request once it's actually serving --
 # a plain root-page fetch is enough to confirm the process is up and

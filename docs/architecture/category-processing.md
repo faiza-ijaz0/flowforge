@@ -101,18 +101,29 @@ this record"), non-retryable.
 no database access beyond `WorkloadService` (input-processing.md's whole point), and jobs within
 one workload have no execution-order guarantee across `PriorityScheduler`'s worker threads -- a
 CSV containing both a parent row and a child row referencing it in the *same* import has no
-guarantee the parent's job runs first. Rather than add ordering machinery, this phase makes the
-constraint explicit: **a parent category must already be a persisted row before a job referencing
-it can succeed.** A record with a missing parent is structurally valid (passes preview and
+guarantee the parent's job runs first.
+
+**Same-submission parents (Phase 3H follow-up).** Originally the rule was "a parent must already be
+persisted", and a child whose parent was in the *same* submission failed permanently whenever its
+job happened to run first -- reproduced in the browser as 1 succeeded / 3 failed for a
+root/child/grandchild CSV. Now `InputProcessingService::confirm()` marks a category's payload
+`"parent_in_submission":"true"` when its `parent_slug` is another accepted record of the same
+submission, and the handler treats *that* missing immediate parent as **retryable**: the existing
+retry engine re-runs the child after backoff, by which time the parent has committed. Record order
+in the file does not matter (`MultiLevelHierarchyInOneSubmissionSucceedsRegardlessOfRecordOrder`
+submits child-first). Bounded by the job's retry policy (default 3 attempts): a parent that never
+appears -- e.g. its own job failed -- leaves the child in `dead_letter`, and a very deep chain could
+exhaust the budget with worst-case timing. For any parent **not** in the submission the original
+rule stands: **it must already be a persisted row before a job referencing it can succeed.** A record with a missing parent is structurally valid (passes preview and
 confirm, becomes a real job) and only fails when *that job* executes -- a deliberate, documented
 tradeoff, not an oversight. See `ProcessRoutesTest.ConfirmCategoryWithMissingParentIsAcceptedAtConfirmButFailsAsAJob`
 for the exact, verified behavior this implies: `confirm()` returns 201 with `valid_records: 1`,
 and the workload later resolves to `status: "failed"` with the job's `last_error` naming the
 missing parent.
 
-**The two-stage import strategy this implies.** To build a category tree via bulk import: import
-parent categories first (in one CSV/image, with no `parent_slug`), wait for that workload to
-succeed, then import children referencing them by slug in a second import. This mirrors how a
+**Importing a tree.** A tree can be imported in one submission (see above). Importing level by level
+-- parents first, wait for that workload to succeed, then children referencing them by slug -- is
+still the most predictable choice for very deep trees. This mirrors how a
 real catalog is normally built (categories before subcategories) and needs no new mechanism --
 just two ordinary imports through the same pipeline.
 

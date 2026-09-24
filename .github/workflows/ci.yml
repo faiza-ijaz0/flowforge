@@ -2,8 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # This repository's default branch is master. Until the Phase 3H
+    # follow-up this list said only [main], so pushes never triggered CI.
+    branches: [master, main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -105,6 +108,16 @@ jobs:
           path: build/_deps
           key: fetchcontent-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
 
+      - name: Validate the migration runner against a fresh, disposable database
+        # Fresh apply, schema/constraint/FK/index checks, idempotent re-run,
+        # and a deliberately broken migration that must abort non-zero
+        # without being recorded (see tests/integration/check-migrations.sh).
+        run: |
+          PGPASSWORD=flowforge createdb -h localhost -U flowforge flowforge_migcheck
+          ./tests/integration/check-migrations.sh
+        env:
+          FLOWFORGE_CHECK_DATABASE_URL: postgres://flowforge:flowforge@localhost:5432/flowforge_migcheck
+
       - name: Run migrations against the test database
         run: ./scripts/db-migrate.sh
         env:
@@ -156,9 +169,32 @@ jobs:
       - run: npm run build --workspace=apps/dashboard
 
   docker-validate:
-    name: Docker Compose config validation
+    name: Docker build + runtime smoke test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Validate docker-compose.yml
         run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Start PostgreSQL and apply migrations
+        run: |
+          docker compose up -d --wait postgres
+          docker compose run --rm migrate
+
+      - name: Start server + dashboard and wait for their healthchecks
+        run: docker compose up -d --wait --wait-timeout 180 server dashboard
+
+      - name: Smoke test the running stack (real HTTP, real PostgreSQL, real OCR)
+        run: python3 tests/e2e/smoke-test.py --api-url http://localhost:8080 --dashboard-url http://localhost:3000 --ocr
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

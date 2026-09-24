@@ -23,8 +23,11 @@ Windows migration-tooling bug via real fresh-database and upgrade-path testing, 
 security probe battery, measured a real performance baseline, and produced complete operational
 documentation (deployment, backup/recovery, release checklist). See
 [`docs/architecture/phase-3h-production-readiness.md`](docs/architecture/phase-3h-production-readiness.md)
-for the full report — including honestly-documented gaps (no authentication, Docker never
-runtime-validated) this phase did **not** claim to close. See also
+for the full report — including a follow-up pass that found CI had never run (it triggered on
+`main`; the branch is `master`), fixed a category-hierarchy race and silent in-submission duplicate
+collapsing found through real browser runs, fixed five Docker defects, and added a real Docker
+build + runtime smoke test to CI. Gaps it does **not** claim to close: no authentication, and Docker
+not yet runtime-validated anywhere except the CI job that now does so. See also
 [`docs/architecture/phase-3g-audit.md`](docs/architecture/phase-3g-audit.md),
 [`docs/architecture/overview.md`](docs/architecture/overview.md),
 [`docs/architecture/execution-model.md`](docs/architecture/execution-model.md),
@@ -293,10 +296,11 @@ docker compose up --build
 Starts PostgreSQL, the server (`:8080`), and the dashboard (`:3000`). Migrations are **not** run
 automatically (see `docs/architecture/overview.md` §7) — run `docker compose run --rm migrate`
 separately. Both the server and dashboard images run as non-root users and have `HEALTHCHECK`
-instructions. **Docker has not been runtime-validated in this project's CI or local development** —
-only `docker compose config` (static validation) runs today; see
-[`docs/operations/deployment.md`](docs/operations/deployment.md) and the production-readiness
-report for the full, honest status.
+instructions. `NEXT_PUBLIC_API_URL` is a *build* argument (Next.js inlines it into the browser
+bundle), so rebuild the dashboard image after changing it. CI's `docker-validate` job builds both
+images, starts the stack, runs migrations, waits for the healthchecks, and runs
+`tests/e2e/smoke-test.py` against the containers; Docker has not been run in local development. See
+[`docs/operations/deployment.md`](docs/operations/deployment.md).
 
 ## Code quality
 
@@ -310,11 +314,13 @@ cmake -B build -G Ninja -DFLOWFORGE_ENABLE_CLANG_TIDY=ON && cmake --build build 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push/PR: C++ build + test (Debug and Release), an
-ASan+UBSan test run, a dedicated PostgreSQL integration test job (spins up a `postgres:16` service
-container, runs migrations, then runs the full test suite including the PostgreSQL-backed repository
-tests and the restart-persistence acceptance test), `clang-format --dry-run`, dashboard
-lint/typecheck/build, and `docker compose config` validation.
+`.github/workflows/ci.yml` runs on every push to `master` and on pull requests (until the Phase 3H
+follow-up it only triggered on `main`, so it had never run): C++ build + test (Debug and Release),
+an ASan+UBSan test run, a dedicated PostgreSQL integration test job (spins up a `postgres:16`
+service container, validates the migration runner on a fresh database with
+`tests/integration/check-migrations.sh`, runs migrations, then runs the full test suite including
+the PostgreSQL-backed tests), `clang-format --dry-run`, dashboard lint/typecheck/build, and a Docker
+job that builds the images, starts the stack, and runs `tests/e2e/smoke-test.py` against it.
 
 ## Roadmap
 
@@ -438,12 +444,14 @@ in `scripts/db-migrate.ps1` that silently reported success on every migration wh
 of them against a genuinely fresh Windows database — verified via real fresh-database and
 incremental-upgrade runs afterward. Ran a focused security probe battery (malformed input, SQL
 injection strings, oversized payloads, path traversal, corrupt uploads) against a live server;
-found one non-critical API-contract issue (a malformed ID returns 500 instead of 400) and
-documented it rather than rushing a cross-cutting fix. Measured a real performance baseline (100
+found one non-critical API-contract issue (a malformed ID returns 500 instead of 400), since
+fixed in the follow-up pass. Measured a real performance baseline (100
 and 500-record CSV flows, 100-record OCR flows) with no unsupported scalability claims. Added
 `docs/operations/{deployment,backup-and-recovery,release-checklist}.md`. Explicitly documented,
-rather than silently ignored: no authentication/authorization exists, and Docker has never been
-runtime-validated (only statically). See
+rather than silently ignored: no authentication/authorization exists. The follow-up pass fixed CI's
+branch trigger (it had never run), a same-submission category-hierarchy race, silently collapsed
+in-submission duplicate keys, the malformed-ID 500, and five Docker defects, and browser-verified
+all six source × target flows. See
 [`docs/architecture/phase-3h-production-readiness.md`](docs/architecture/phase-3h-production-readiness.md)
 for the complete report.
 

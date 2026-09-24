@@ -31,7 +31,11 @@ every `getenv_fn(...)` call site in `engine/src/infra/config.cpp`, no gaps found
 - `FLOWFORGE_CORS_ALLOWED_ORIGIN` — the dashboard's exact origin. Must match exactly (no wildcard
   support, by design) — set this to your real dashboard URL in any deployment where the dashboard
   is not on `http://localhost:3000`.
-- `NEXT_PUBLIC_API_URL` (dashboard-side) — the server's externally-reachable URL.
+- `NEXT_PUBLIC_API_URL` (dashboard-side) — the server's URL as reachable from the user's browser.
+  Inlined at **build** time (`next build` / `docker build --build-arg`), not read at runtime:
+  changing it requires rebuilding the dashboard.
+- `FLOWFORGE_TESSERACT_PATH` (optional) — absolute path to the `tesseract` CLI if it is not on
+  `PATH` or in a standard location. The server image installs Tesseract at `/usr/bin/tesseract`.
 
 **Production CORS**: set `FLOWFORGE_CORS_ALLOWED_ORIGIN` to your dashboard's real origin (e.g.
 `https://flowforge.example.com`), not `http://localhost:3000`. An empty value disables CORS headers
@@ -92,12 +96,15 @@ containers run as non-root users and have `HEALTHCHECK` instructions (server: `G
 dashboard: `GET /`) — `docker compose ps` will show `healthy`/`unhealthy` accordingly once the stack
 is actually running somewhere Docker is available.
 
-**Docker has not been runtime-validated in this project's CI or local development as of Phase
-3H** — CI's `docker-validate` job only runs `docker compose config --quiet` (static config
-parsing), never an actual `docker compose up`. If you deploy via Docker, this is the first time
-these Dockerfiles/compose file will have actually been exercised end-to-end; watch the container
-logs and `docker compose ps` health status closely on first deploy, and consider filing/fixing
-anything you find (see the production-readiness report's "Deferred Work").
+Set `NEXT_PUBLIC_API_URL` (and `FLOWFORGE_CORS_ALLOWED_ORIGIN` to the dashboard's origin) in `.env`
+*before* `docker compose up --build`: the API URL is baked into the dashboard image at build time.
+
+**Validation status:** CI's `docker-validate` job builds both images, starts PostgreSQL, runs the
+`migrate` service, starts `server` + `dashboard` with `--wait` (their healthchecks must pass), and
+runs `tests/e2e/smoke-test.py --ocr` against the containers. Docker has not been run in this
+project's local development environment, and that CI job first ran on the Phase 3H follow-up
+commit — check its latest result before relying on the images. To smoke-test your own deployment:
+`python3 tests/e2e/smoke-test.py --api-url <api> --dashboard-url <dashboard> --ocr`.
 
 ## Health checks and readiness checks
 
@@ -145,7 +152,8 @@ data-loss tolerance requires; there is no other durable state to back up.
   both single-process. Running multiple `flowforge_server` instances against the same database is
   untested and not currently a supported topology (each instance's scheduler/worker pool/retry
   dispatcher would operate independently against shared `jobs` rows with no coordination).
-- Docker deployment is described here but has not been runtime-validated (§ above).
+- Docker deployment is validated only by the CI `docker-validate` job (§ above), not in local
+  development.
 - A malformed (non-UUID) ID in a lookup URL currently returns HTTP 500 rather than 400 — see the
   production-readiness report §13. Not a security issue; a minor API-contract rough edge.
 

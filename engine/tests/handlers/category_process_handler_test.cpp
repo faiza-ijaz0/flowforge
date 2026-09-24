@@ -116,6 +116,33 @@ TEST(CategoryProcessHandlerTest, MissingParentIsRejectedNonRetryably) {
   EXPECT_NE(result.error().message().find("does not exist"), std::string::npos);
 }
 
+TEST(CategoryProcessHandlerTest, MissingParentFromTheSameSubmissionIsRetryable) {
+  // Set by InputProcessingService::confirm() when the parent is another
+  // record of the same submission, whose job may not have committed yet.
+  CategoryProcessHandler handler(std::make_shared<persistence::InMemoryCategoryRepository>());
+  auto result = handler.execute(
+      make_context(), R"({"name": "Laptops", "parent_slug": "electronics", "parent_in_submission": "true"})");
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_FALSE(result->succeeded());
+  EXPECT_TRUE(result->retryable());
+}
+
+TEST(CategoryProcessHandlerTest, SameSubmissionParentSucceedsOnceThePersistedParentExists) {
+  auto repository = std::make_shared<persistence::InMemoryCategoryRepository>();
+  CategoryProcessHandler handler(repository);
+  const auto child_payload =
+      R"({"name": "Laptops", "parent_slug": "electronics", "parent_in_submission": "true"})";
+
+  auto first_attempt = handler.execute(make_context(), child_payload);
+  ASSERT_TRUE(first_attempt.has_value());
+  ASSERT_TRUE(first_attempt->retryable());
+
+  ASSERT_TRUE(handler.execute(make_context(), R"({"name": "Electronics"})")->succeeded());
+  auto retry = handler.execute(make_context(), child_payload);
+  ASSERT_TRUE(retry.has_value()) << retry.error().message();
+  EXPECT_TRUE(retry->succeeded());
+}
+
 TEST(CategoryProcessHandlerTest, SelfParentIsRejected) {
   CategoryProcessHandler handler(std::make_shared<persistence::InMemoryCategoryRepository>());
   auto context = make_context();

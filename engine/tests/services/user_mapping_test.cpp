@@ -97,5 +97,16 @@ TEST(UserMappingTest, EmptyInputProducesEmptyOutput) {
   EXPECT_TRUE(mapped.rejected_records.empty());
 }
 
+TEST(UserMappingTest, RejectsDuplicateEmailWithinOneSubmissionKeepingTheFirst) {
+  auto mapped = map_structured_records_to_users(
+      {record_from({{"name", "Alice"}, {"email", "alice@example.com"}}),
+       record_from({{"name", "Alice Again"}, {"email", " ALICE@example.com "}})});
+  ASSERT_EQ(mapped.valid_records.size(), 1u);
+  EXPECT_EQ(mapped.valid_records[0].name, "Alice");
+  ASSERT_EQ(mapped.rejected_records.size(), 1u);
+  EXPECT_EQ(mapped.rejected_records[0].index, 2u);
+  EXPECT_NE(mapped.rejected_records[0].reason.find("duplicate email"), std::string::npos);
+}
+
 }  // namespace
 }  // namespace flowforge::services

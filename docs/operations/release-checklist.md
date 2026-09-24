@@ -73,12 +73,13 @@ check — this is meant to be actually run, not just read.
 
 ## Docker (if deploying via Docker)
 
-- [ ] `docker compose config --quiet` passes (static validation — this is what CI checks).
-- [ ] If Docker is available to you locally or in a staging environment: `docker compose up --build`
-      actually starts all services, and `docker compose ps` shows `healthy` for `server` and
-      `dashboard` once their `HEALTHCHECK`s have had time to run. **This has not been done in this
-      project's CI as of Phase 3H** — treat your own first real run as the first real signal, not a
-      formality.
+- [ ] CI's `docker-validate` job is green for the commit being released (it builds both images,
+      starts the stack with migrations, waits for healthchecks, and runs the smoke test with OCR).
+- [ ] `NEXT_PUBLIC_API_URL` was set for the *build* of the dashboard image you are deploying.
+- [ ] After deploying: `python3 tests/e2e/smoke-test.py --api-url <api> --dashboard-url <dashboard>`
+      passes against the real environment (add `--ocr` if image processing is in use). Note it
+      writes 95–195 real product rows (`PROD-*`/`PROD*` SKUs) — run it against staging, or accept
+      those rows.
 
 ## Backup / monitoring / logging
 

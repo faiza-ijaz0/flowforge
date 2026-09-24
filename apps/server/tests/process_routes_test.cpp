@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -1039,6 +1040,50 @@ TEST_F(ProcessRoutesTest, ConfirmCategoryWithValidPreexistingParentSucceeds) {
     }
   }
   EXPECT_TRUE(found_laptops);
+}
+
+TEST_F(ProcessRoutesTest, MultiLevelHierarchyInOneSubmissionSucceedsRegardlessOfRecordOrder) {
+  // Phase 3H follow-up regression: sibling jobs execute in parallel, so a
+  // child's job could run before its same-submission parent's job had
+  // committed and fail permanently with "parent does not exist". Records
+  // are deliberately ordered child-first here. The child is retried
+  // through the real retry engine until the parent exists.
+  auto client = make_client();
+  nlohmann::json body{
+      {"target", "categories"},
+      {"records", nlohmann::json::array({{{"name", "Gaming Laptops"}, {"parent_slug", "laptops"}},
+                                         {{"name", "Laptops"}, {"parent_slug", "electronics"}},
+                                         {{"name", "Electronics"}}})}};
+  auto confirm_res = client.Post("/api/v1/process/confirm", body.dump(), "application/json");
+  ASSERT_TRUE(confirm_res);
+  ASSERT_EQ(confirm_res->status, 201);
+  auto confirm_parsed = nlohmann::json::parse(confirm_res->body);
+  ASSERT_EQ(confirm_parsed["valid_records"], 3);
+  const std::string workload_id = confirm_parsed["id"].get<std::string>();
+
+  // Worst case is two retries (default backoff 1s then 2s) for the
+  // grandchild, so allow well beyond that.
+  nlohmann::json workload;
+  for (int i = 0; i < 300; ++i) {
+    auto get_res = client.Get("/api/v1/workloads/" + workload_id);
+    workload = nlohmann::json::parse(get_res->body);
+    if (workload["status"] == "succeeded" || workload["status"] == "failed")
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  ASSERT_EQ(workload["status"], "succeeded") << workload.dump();
+  EXPECT_EQ(workload["completed_items"], 3);
+  EXPECT_EQ(workload["failed_items"], 0);
+
+  auto categories_parsed = nlohmann::json::parse(client.Get("/api/v1/categories?limit=50")->body);
+  std::map<std::string, nlohmann::json> by_slug;
+  for (const auto& category : categories_parsed["categories"]) {
+    by_slug[category["slug"].get<std::string>()] = category["parent_slug"];
+  }
+  ASSERT_EQ(by_slug.size(), 3u);
+  EXPECT_TRUE(by_slug["electronics"].is_null());
+  EXPECT_EQ(by_slug["laptops"], "electronics");
+  EXPECT_EQ(by_slug["gaming-laptops"], "laptops");
 }
 
 TEST_F(ProcessRoutesTest, ConfirmCategoryWithMissingParentIsAcceptedAtConfirmButFailsAsAJob) {

@@ -210,6 +210,13 @@ itself yet.
 { "workers": [] }
 ```
 
+## Path IDs
+
+Every `{id}` path segment (`/jobs/{id}`, `/jobs/{id}/attempts`, `/jobs/{id}/cancel`,
+`/workloads/{id}`, `/workloads/{id}/items`) must be a canonical `8-4-4-4-12` hex UUID. Anything else
+is rejected with `400 validation_error` ("invalid job id: expected a UUID") before any database
+access; a well-formed UUID that does not exist is `404 not_found`.
+
 ## Error shape
 
 Every non-2xx response body:

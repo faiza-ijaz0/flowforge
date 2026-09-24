@@ -1,0 +1,19 @@
+# Keep the Docker build context to source only. Without this, the
+# dashboard image's `COPY . .` would pull host node_modules (possibly built
+# for another OS) over the clean `npm ci` layer, plus multi-GB local CMake
+# build trees and logs.
+.git
+**/node_modules
+**/.next
+build
+build-*
+out
+Testing
+*.log
+.env
+.env.*
+!.env.example
+.vscode
+.idea
+.toolchain
+.cache

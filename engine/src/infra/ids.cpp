@@ -42,4 +42,21 @@ std::string generate_uuid_v4() {
   return uuid;
 }
 
+bool is_uuid(std::string_view value) noexcept {
+  if (value.size() != 36) {
+    return false;
+  }
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    const char c = value[i];
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (c != '-') {
+        return false;
+      }
+    } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace flowforge::infra

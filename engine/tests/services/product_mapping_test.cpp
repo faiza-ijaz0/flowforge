@@ -106,5 +106,19 @@ TEST(ProductMappingTest, EmptyInputProducesEmptyOutput) {
   EXPECT_TRUE(mapped.rejected_records.empty());
 }
 
+TEST(ProductMappingTest, RejectsDuplicateSkuWithinOneSubmissionKeepingTheFirst) {
+  auto mapped = map_structured_records_to_products(
+      {record_from({{"sku", "DUP-1"}, {"name", "First"}, {"price", "1.00"}}),
+       record_from({{"sku", "OK-2"}, {"name", "Other"}, {"price", "2.00"}}),
+       record_from({{"sku", "DUP-1"}, {"name", "Second"}, {"price", "3.00"}})});
+  ASSERT_EQ(mapped.valid_records.size(), 2u);
+  EXPECT_EQ(mapped.valid_records[0].name, "First");
+  EXPECT_EQ(mapped.valid_records[1].sku, "OK-2");
+  ASSERT_EQ(mapped.rejected_records.size(), 1u);
+  EXPECT_EQ(mapped.rejected_records[0].index, 3u);
+  EXPECT_NE(mapped.rejected_records[0].reason.find("duplicate sku 'DUP-1'"), std::string::npos);
+  EXPECT_EQ(mapped.rejected_record_count, 1u);
+}
+
 }  // namespace
 }  // namespace flowforge::services

@@ -17,7 +17,9 @@ if (-not (Get-Command psql -ErrorAction SilentlyContinue)) {
 }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$MigrationsDir = Join-Path $ScriptDir "..\database\migrations"
+# FLOWFORGE_MIGRATIONS_DIR: test-only override, see db-migrate.sh.
+$MigrationsDir = $env:FLOWFORGE_MIGRATIONS_DIR
+if (-not $MigrationsDir) { $MigrationsDir = Join-Path $ScriptDir "..\database\migrations" }
 
 psql $DatabaseUrl -v ON_ERROR_STOP=1 -c `
     "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());" | Out-Null

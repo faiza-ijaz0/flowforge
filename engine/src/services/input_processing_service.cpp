@@ -1,6 +1,8 @@
 #include "flowforge/services/input_processing_service.hpp"
 
 #include <cstdio>
+#include <optional>
+#include <string>
 #include <unordered_set>
 
 #include "flowforge/domain/category_record.hpp"
@@ -162,12 +164,23 @@ struct GenericMappedRecords {
       ErrorCode::Validation, "target '" + std::string(domain::to_string(target)) + "' is not supported"));
 }
 
+/// One confirmed record after re-validation: its normalized natural key
+/// (email / sku / slug -- the column the target table upserts on) and its
+/// serialized job payload.
+struct ValidatedRecord {
+  std::string natural_key;
+  std::string payload;
+  /// Categories only: kept so confirm() can re-serialize with
+  /// `parent_in_submission` once it knows every slug in the submission.
+  std::optional<domain::NormalizedCategoryRecord> category;
+};
+
 /// Re-validates one already-normalized generic record against `target`'s
 /// own rules and serializes it as that target's job payload -- confirm()'s
 /// per-record step. Never trusts `record` as already-valid (see
 /// `ConfirmRequest`'s class comment).
-[[nodiscard]] Result<std::string> validate_record_for_target(domain::ProcessingTarget target,
-                                                             const domain::StructuredRecord& record) {
+[[nodiscard]] Result<ValidatedRecord> validate_record_for_target(domain::ProcessingTarget target,
+                                                                 const domain::StructuredRecord& record) {
   if (target == domain::ProcessingTarget::Users) {
     const auto name = record.field("name");
     const auto email = record.field("email");
@@ -178,7 +191,9 @@ struct GenericMappedRecords {
     if (!normalized) {
       return std::unexpected(normalized.error());
     }
-    return domain::serialize_user_record_as_job_payload(*normalized);
+    return ValidatedRecord{.natural_key = normalized->email,
+                           .payload = domain::serialize_user_record_as_job_payload(*normalized),
+                           .category = std::nullopt};
   }
   if (target == domain::ProcessingTarget::Products) {
     const auto sku = record.field("sku");
@@ -193,7 +208,9 @@ struct GenericMappedRecords {
     if (!normalized) {
       return std::unexpected(normalized.error());
     }
-    return domain::serialize_product_record_as_job_payload(*normalized);
+    return ValidatedRecord{.natural_key = normalized->sku,
+                           .payload = domain::serialize_product_record_as_job_payload(*normalized),
+                           .category = std::nullopt};
   }
   if (target == domain::ProcessingTarget::Categories) {
     const auto name = record.field("name");
@@ -205,7 +222,9 @@ struct GenericMappedRecords {
     if (!normalized) {
       return std::unexpected(normalized.error());
     }
-    return domain::serialize_category_record_as_job_payload(*normalized);
+    return ValidatedRecord{.natural_key = normalized->slug,
+                           .payload = domain::serialize_category_record_as_job_payload(*normalized),
+                           .category = *normalized};
   }
   return std::unexpected(make_error(
       ErrorCode::Validation, "target '" + std::string(domain::to_string(target)) + "' is not supported"));
@@ -350,16 +369,42 @@ Result<ProcessResult> InputProcessingService::confirm(const ConfirmRequest& requ
   create_request.items.reserve(request.records.size());
 
   std::vector<domain::RejectedRecord> rejected_records;
+  std::unordered_set<std::string> seen_keys;
+  std::vector<std::optional<domain::NormalizedCategoryRecord>> accepted_categories;
   for (std::size_t i = 0; i < request.records.size(); ++i) {
     // Never trusted as already-valid -- see ConfirmRequest's class
     // comment: re-run the exact same validation preview() itself
     // already ran (and, for Users, the CSV import path also runs).
-    auto payload = validate_record_for_target(request.target, request.records[i]);
-    if (!payload) {
-      rejected_records.push_back({.index = i + 1, .reason = payload.error().message()});
+    auto validated = validate_record_for_target(request.target, request.records[i]);
+    if (!validated) {
+      rejected_records.push_back({.index = i + 1, .reason = validated.error().message()});
       continue;
     }
-    create_request.items.push_back({.payload = std::move(*payload)});
+    // Enforced here too, not only in preview's mapping step: a caller may
+    // confirm records that never went through preview.
+    if (!seen_keys.insert(validated->natural_key).second) {
+      rejected_records.push_back({.index = i + 1,
+                                  .reason = "duplicate key '" + validated->natural_key +
+                                            "' in this submission -- only the first occurrence is kept"});
+      continue;
+    }
+    create_request.items.push_back({.payload = std::move(validated->payload)});
+    accepted_categories.push_back(std::move(validated->category));
+  }
+
+  // Categories: a child whose parent is another record of this same
+  // submission is marked so its handler retries (rather than fails) if
+  // the parent's parallel job has not committed yet -- see
+  // CategoryProcessHandler's "Retryability". seen_keys holds exactly the
+  // accepted slugs here.
+  if (request.target == domain::ProcessingTarget::Categories) {
+    for (std::size_t i = 0; i < create_request.items.size(); ++i) {
+      const auto& category = accepted_categories[i];
+      if (category && category->parent_slug && seen_keys.contains(*category->parent_slug)) {
+        create_request.items[i].payload =
+            domain::serialize_category_record_as_job_payload(*category, /*parent_in_submission=*/true);
+      }
+    }
   }
 
   auto created = workload_service_->create_workload(create_request);

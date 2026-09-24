@@ -318,9 +318,31 @@ TEST_F(HttpServerTest, CreateJobRejectsMissingQueueName) {
 
 TEST_F(HttpServerTest, GetUnknownJobReturns404) {
   auto client = make_client();
-  auto res = client.Get("/api/v1/jobs/does-not-exist");
+  auto res = client.Get("/api/v1/jobs/00000000-0000-0000-0000-000000000000");
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, 404);
+}
+
+// Phase 3H follow-up: a malformed id is a client error (400), never a
+// database cast failure surfaced as a 500 -- on every job route that
+// takes a path id.
+TEST_F(HttpServerTest, MalformedJobIdIsRejectedWith400OnEveryJobRoute) {
+  auto client = make_client();
+  for (const std::string id :
+       {"does-not-exist", "1%27%20OR%20%271%27%3D%271", "00000000-0000-0000-0000-00000000000z"}) {
+    auto get_res = client.Get("/api/v1/jobs/" + id);
+    ASSERT_TRUE(get_res);
+    EXPECT_EQ(get_res->status, 400) << id;
+    EXPECT_EQ(nlohmann::json::parse(get_res->body)["error"]["code"], "validation_error") << id;
+
+    auto attempts_res = client.Get("/api/v1/jobs/" + id + "/attempts");
+    ASSERT_TRUE(attempts_res);
+    EXPECT_EQ(attempts_res->status, 400) << id;
+
+    auto cancel_res = client.Post("/api/v1/jobs/" + id + "/cancel", "", "application/json");
+    ASSERT_TRUE(cancel_res);
+    EXPECT_EQ(cancel_res->status, 400) << id;
+  }
 }
 
 TEST_F(HttpServerTest, CancelJobTransitionsStatus) {

@@ -3,6 +3,7 @@
 #include <charconv>
 #include <tuple>
 
+#include "flowforge/infra/ids.hpp"
 #include "http/error_response.hpp"
 #include "json/job_json.hpp"
 
@@ -26,6 +27,18 @@ std::size_t parse_size_param(const httplib::Request& req, const char* name, std:
 void write_error(httplib::Response& res, const Error& error) {
   res.status = http_status_for(error.code());
   res.set_content(to_error_body(error).dump(), "application/json");
+}
+
+// Rejects a non-UUID path id with a 400 before it reaches a UUID-typed
+// PostgreSQL column (where the failed cast would surface as a 500).
+// Returns true when the response has been written and the caller must stop.
+bool reject_malformed_id(const std::string& id, const char* what, httplib::Response& res) {
+  if (infra::is_uuid(id)) {
+    return false;
+  }
+  write_error(res,
+              make_error(ErrorCode::Validation, std::string("invalid ") + what + " id: expected a UUID"));
+  return true;
 }
 
 }  // namespace
@@ -118,7 +131,11 @@ void register_job_routes(httplib::Server& server, const std::shared_ptr<services
   });
 
   server.Get("/api/v1/jobs/:id", [job_service](const httplib::Request& req, httplib::Response& res) {
-    auto job = job_service->get_job(req.path_params.at("id"));
+    const std::string& id = req.path_params.at("id");
+    if (reject_malformed_id(id, "job", res)) {
+      return;
+    }
+    auto job = job_service->get_job(id);
     if (!job) {
       write_error(res, job.error());
       return;
@@ -130,7 +147,11 @@ void register_job_routes(httplib::Server& server, const std::shared_ptr<services
   // redesign of the existing job API -- a new, separate endpoint.
   server.Get("/api/v1/jobs/:id/attempts",
              [execution_manager](const httplib::Request& req, httplib::Response& res) {
-               auto attempts = execution_manager->history_for(infra::JobId{req.path_params.at("id")});
+               const std::string& id = req.path_params.at("id");
+               if (reject_malformed_id(id, "job", res)) {
+                 return;
+               }
+               auto attempts = execution_manager->history_for(infra::JobId{id});
                if (!attempts) {
                  write_error(res, attempts.error());
                  return;
@@ -145,6 +166,9 @@ void register_job_routes(httplib::Server& server, const std::shared_ptr<services
   server.Post("/api/v1/jobs/:id/cancel", [job_service, scheduler, worker_pool, metrics](
                                              const httplib::Request& req, httplib::Response& res) {
     const std::string id = req.path_params.at("id");
+    if (reject_malformed_id(id, "job", res)) {
+      return;
+    }
     auto job = job_service->cancel_job(id);
     if (!job) {
       write_error(res, job.error());

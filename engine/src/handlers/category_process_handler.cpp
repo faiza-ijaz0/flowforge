@@ -49,6 +49,7 @@ Result<domain::ExecutionResult> CategoryProcessHandler::execute(const engine::Ex
   auto raw_slug = extract_json_string_field(payload, "slug");
   auto raw_description = extract_json_string_field(payload, "description");
   auto raw_parent_slug = extract_json_string_field(payload, "parent_slug");
+  const bool parent_in_submission = extract_json_string_field(payload, "parent_in_submission") == "true";
 
   // Shared with the Processing Center's preview/confirm path (see
   // domain/category_record.hpp's class comment) -- "what makes a valid
@@ -93,6 +94,19 @@ Result<domain::ExecutionResult> CategoryProcessHandler::execute(const engine::Ex
                                                 /*retryable=*/true, duration);
       }
       if (!parent->has_value()) {
+        // The immediate parent belongs to this same submission: its job
+        // runs in parallel with this one and may not have committed yet.
+        // Retry (existing retry engine, bounded by the job's retry policy)
+        // instead of failing a record that would succeed moments later.
+        if (parent_in_submission && depth == 0) {
+          const auto duration =
+              std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+          return domain::ExecutionResult::failure(
+              ErrorCode::Validation,
+              "parent category '" + current +
+                  "' (from this same submission) does not exist yet -- will retry",
+              /*retryable=*/true, duration);
+        }
         return std::unexpected(make_error(
             ErrorCode::Validation, "parent category '" + current +
                                        "' does not exist -- import it first, then re-import this record"));

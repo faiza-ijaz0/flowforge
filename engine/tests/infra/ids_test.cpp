@@ -22,6 +22,23 @@ TEST(GenerateUuidV4Test, GeneratesUniqueValues) {
   }
 }
 
+TEST(IsUuidTest, AcceptsGeneratedAndCanonicalUuids) {
+  EXPECT_TRUE(is_uuid(generate_uuid_v4()));
+  EXPECT_TRUE(is_uuid("00000000-0000-0000-0000-000000000000"));
+  EXPECT_TRUE(is_uuid("A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D"));
+}
+
+TEST(IsUuidTest, RejectsMalformedValues) {
+  EXPECT_FALSE(is_uuid(""));
+  EXPECT_FALSE(is_uuid("does-not-exist"));
+  EXPECT_FALSE(is_uuid("00000000-0000-0000-0000-00000000000"));    // 35 chars
+  EXPECT_FALSE(is_uuid("00000000-0000-0000-0000-0000000000000"));  // 37 chars
+  EXPECT_FALSE(is_uuid("00000000_0000-0000-0000-000000000000"));   // wrong separator
+  EXPECT_FALSE(is_uuid("0000000g-0000-0000-0000-000000000000"));   // non-hex
+  EXPECT_FALSE(is_uuid("00000000-0000-0000-0000-00000000000'"));   // injection-style char
+  EXPECT_FALSE(is_uuid("../../../../etc/passwd-0000-000000000"));
+}
+
 TEST(IdTest, DistinctTagsAreDistinctTypes) {
   JobId job_id = JobId::generate();
   WorkerId worker_id = WorkerId::generate();

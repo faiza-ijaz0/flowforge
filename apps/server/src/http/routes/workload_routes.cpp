@@ -2,6 +2,7 @@
 
 #include <charconv>
 
+#include "flowforge/infra/ids.hpp"
 #include "flowforge/services/user_import.hpp"
 #include "http/error_response.hpp"
 #include "json/workload_json.hpp"
@@ -26,6 +27,18 @@ std::size_t parse_size_param(const httplib::Request& req, const char* name, std:
 void write_error(httplib::Response& res, const Error& error) {
   res.status = http_status_for(error.code());
   res.set_content(to_error_body(error).dump(), "application/json");
+}
+
+// Rejects a non-UUID path id with a 400 before it reaches a UUID-typed
+// PostgreSQL column (where the failed cast would surface as a 500).
+// Returns true when the response has been written and the caller must stop.
+bool reject_malformed_id(const std::string& id, const char* what, httplib::Response& res) {
+  if (infra::is_uuid(id)) {
+    return false;
+  }
+  write_error(res,
+              make_error(ErrorCode::Validation, std::string("invalid ") + what + " id: expected a UUID"));
+  return true;
 }
 
 }  // namespace
@@ -130,7 +143,11 @@ void register_workload_routes(httplib::Server& server,
 
   server.Get("/api/v1/workloads/:id",
              [workload_service](const httplib::Request& req, httplib::Response& res) {
-               auto workload = workload_service->get_workload(req.path_params.at("id"));
+               const std::string& id = req.path_params.at("id");
+               if (reject_malformed_id(id, "workload", res)) {
+                 return;
+               }
+               auto workload = workload_service->get_workload(id);
                if (!workload) {
                  write_error(res, workload.error());
                  return;
@@ -147,7 +164,11 @@ void register_workload_routes(httplib::Server& server,
     const std::size_t limit = parse_size_param(req, "limit", 50);
     const std::size_t offset = parse_size_param(req, "offset", 0);
 
-    auto page = workload_service->list_items(req.path_params.at("id"), limit, offset);
+    const std::string& id = req.path_params.at("id");
+    if (reject_malformed_id(id, "workload", res)) {
+      return;
+    }
+    auto page = workload_service->list_items(id, limit, offset);
     if (!page) {
       write_error(res, page.error());
       return;

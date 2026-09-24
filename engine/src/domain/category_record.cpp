@@ -120,7 +120,8 @@ Result<NormalizedCategoryRecord> validate_and_normalize_category_record(
                                   .parent_slug = std::move(normalized_parent_slug)};
 }
 
-std::string serialize_category_record_as_job_payload(const NormalizedCategoryRecord& record) {
+std::string serialize_category_record_as_job_payload(const NormalizedCategoryRecord& record,
+                                                     bool parent_in_submission) {
   std::string payload = R"({"name":")" + infra::json_escape(record.name) + R"(","slug":")" +
                         infra::json_escape(record.slug) + R"(")";
   if (record.description) {
@@ -128,6 +129,9 @@ std::string serialize_category_record_as_job_payload(const NormalizedCategoryRec
   }
   if (record.parent_slug) {
     payload += R"(,"parent_slug":")" + infra::json_escape(*record.parent_slug) + R"(")";
+    if (parent_in_submission) {
+      payload += R"(,"parent_in_submission":"true")";
+    }
   }
   payload += "}";
   return payload;

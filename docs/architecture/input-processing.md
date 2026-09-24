@@ -602,6 +602,16 @@ tampered with in transit or by a modified client) and then calls the exact same
 concepts -- `confirm()` is `process()`'s create-a-workload step, fed by already-extracted records
 instead of a fresh CSV parse.
 
+**Duplicate natural keys within one submission (Phase 3H follow-up).** Preview (every target's
+mapping function) and confirm (independently, since a caller can confirm without previewing)
+reject a record whose normalized natural key -- `email` for Users, `sku` for Products, `slug` for
+Categories -- already appeared earlier in the same submission: "duplicate sku 'X' in this submission
+-- only the first occurrence is kept". This is the same first-occurrence-wins rule the Users CSV
+wizard already applied (user-import.md, "Duplicate rows"). Before this, both records became jobs
+that upserted the same row and the preview counted both as valid -- found when OCR turned five
+different category rows into the same slug. Re-importing a key in a *later* submission is
+unaffected and still upserts.
+
 **Why this is stateless rather than a server-side "preview session".** `/preview`'s response
 already contains everything `/confirm` needs (the normalized, ready-to-submit records) -- there is
 no missing information a server-side session would supply that the client doesn't already have.

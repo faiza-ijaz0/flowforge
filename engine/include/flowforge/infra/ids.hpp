@@ -16,6 +16,14 @@ namespace flowforge::infra {
 /// of engineering for this phase.
 [[nodiscard]] std::string generate_uuid_v4();
 
+/// True when `value` is a canonical 8-4-4-4-12 hex UUID (either case).
+/// Used at the HTTP boundary to reject malformed path IDs with a 400
+/// before they reach a UUID-typed PostgreSQL column -- which would
+/// otherwise fail the cast and surface as a 500 (Phase 3H security
+/// probe finding). Deliberately does not check version/variant bits:
+/// any UUID PostgreSQL would accept as an id is a well-formed request.
+[[nodiscard]] bool is_uuid(std::string_view value) noexcept;
+
 /// Strongly-typed identifier wrapper. Prevents accidentally passing a
 /// JobId where a WorkerId is expected -- both are "just a string"
 /// underneath, but the type system should still catch the mix-up.

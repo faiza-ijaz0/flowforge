@@ -1,5 +1,8 @@
 #include "flowforge/services/category_mapping.hpp"
 
+#include <string>
+#include <unordered_set>
+
 namespace flowforge::services {
 
 namespace {
@@ -14,6 +17,7 @@ MappedCategoryRecords map_structured_records_to_categories(
     const std::vector<domain::StructuredRecord>& records) {
   MappedCategoryRecords result;
   result.total_records = records.size();
+  std::unordered_set<std::string> seen_slugs;
 
   for (std::size_t i = 0; i < records.size(); ++i) {
     const auto& record = records[i];
@@ -39,6 +43,23 @@ MappedCategoryRecords map_structured_records_to_categories(
       ++result.rejected_record_count;
       if (result.rejected_records.size() < kMaxReportedRejectedRecords) {
         result.rejected_records.push_back({.index = i + 1, .reason = normalized.error().message()});
+      } else {
+        result.rejected_records_truncated = true;
+      }
+      continue;
+    }
+
+    // Same rule as the Users CSV import wizard (user-import.md, "Duplicate
+    // rows"): within one submission the first occurrence of a natural key
+    // wins; later ones are rejected rather than silently collapsing onto the
+    // same row via upsert. Re-importing across submissions still upserts.
+    if (!seen_slugs.insert(normalized->slug).second) {
+      ++result.rejected_record_count;
+      if (result.rejected_records.size() < kMaxReportedRejectedRecords) {
+        result.rejected_records.push_back(
+            {.index = i + 1,
+             .reason = "duplicate slug '" + normalized->slug +
+                       "' in this submission -- only the first occurrence is kept"});
       } else {
         result.rejected_records_truncated = true;
       }

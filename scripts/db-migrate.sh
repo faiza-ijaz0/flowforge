@@ -22,7 +22,10 @@ if ! command -v psql >/dev/null 2>&1; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MIGRATIONS_DIR="${SCRIPT_DIR}/../database/migrations"
+# FLOWFORGE_MIGRATIONS_DIR exists for tests/integration/check-migrations.sh, which
+# points the runner at a copy containing a deliberately broken migration to
+# prove a failure aborts non-zero. Operators never need to set it.
+MIGRATIONS_DIR="${FLOWFORGE_MIGRATIONS_DIR:-${SCRIPT_DIR}/../database/migrations}"
 
 psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -c \
   "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());" \
@@ -40,6 +43,14 @@ for migration_path in "${MIGRATIONS_DIR}"/*.sql; do
   fi
 
   echo "apply   ${version}"
+  # Under Git Bash on Windows, a native psql.exe cannot open /c/... paths;
+  # cygpath -m yields the C:/... form it accepts, and MSYS argument
+  # conversion must be off or it rewrites "\i C:/..." in transit.
+  # No-op on Linux/macOS.
+  if command -v cygpath >/dev/null 2>&1; then
+    migration_path="$(cygpath -m "${migration_path}")"
+    export MSYS2_ARG_CONV_EXCL="*"
+  fi
   psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -1 \
     -c "\\i ${migration_path}" \
     -c "INSERT INTO schema_migrations (version) VALUES ('${version}');" \

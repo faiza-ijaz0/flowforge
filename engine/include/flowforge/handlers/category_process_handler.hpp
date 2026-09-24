@@ -45,8 +45,13 @@ namespace flowforge::handlers {
 ///
 /// Retryability: a validation failure -- malformed/missing fields, a
 /// self-referencing parent, a missing parent, or a cyclic parent chain --
-/// is always non-retryable: none of those can be fixed by simply retrying
-/// the same job. A `categories` table write failure
+/// is non-retryable: none of those can be fixed by simply retrying the
+/// same job. One exception (Phase 3H follow-up): when the payload carries
+/// `parent_in_submission` (set by `InputProcessingService::confirm()`) and
+/// the *immediate* parent is missing, the failure is retryable -- that
+/// parent's own job, from the same submission, runs in parallel and may
+/// simply not have committed yet. If it never appears, the job exhausts
+/// its retry policy and ends in dead_letter. A `categories` table write failure
 /// (`ErrorCode::Database`/`Infrastructure`) is retryable=true, identical
 /// to `ProductProcessHandler`.
 class CategoryProcessHandler final : public engine::IJobHandler {

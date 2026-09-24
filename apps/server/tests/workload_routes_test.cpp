@@ -157,6 +157,18 @@ TEST_F(WorkloadRoutesTest, GetWorkloadReturnsNotFoundForUnknownId) {
   EXPECT_EQ(parsed["error"]["code"], "not_found");
 }
 
+TEST_F(WorkloadRoutesTest, MalformedWorkloadIdIsRejectedWith400) {
+  auto client = make_client();
+  auto res = client.Get("/api/v1/workloads/not-a-uuid");
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 400);
+  EXPECT_EQ(nlohmann::json::parse(res->body)["error"]["code"], "validation_error");
+
+  auto items_res = client.Get("/api/v1/workloads/not-a-uuid/items");
+  ASSERT_TRUE(items_res);
+  EXPECT_EQ(items_res->status, 400);
+}
+
 TEST_F(WorkloadRoutesTest, ListWorkloadsReturnsCreatedWorkloads) {
   auto client = make_client();
   for (int i = 0; i < 2; ++i) {

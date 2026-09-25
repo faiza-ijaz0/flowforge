@@ -83,32 +83,32 @@ read, so it is never a cached counter that can drift.
 
 ```mermaid
 flowchart TB
-    user([Operator]) --> dash["Next.js dashboard<br/>(TypeScript, Tailwind)"]
+    user([Operator]) --> dash["Next.js dashboard"]
     dash -->|HTTP / JSON| api
 
     subgraph server["flowforge_server (C++23)"]
-        api["HTTP API<br/>cpp-httplib · CORS allowlist · request validation"]
-        ips["InputProcessingService<br/>CSV extractor · image extractor (OCR)"]
-        wls["WorkloadService / JobService"]
-        sched["PriorityScheduler<br/>PriorityBlockingQueue"]
-        pool["LocalWorkerPool<br/>bounded dispatch queue"]
-        exec["JobExecutor<br/>HandlerRegistry → IJobHandler"]
+        api["HTTP API<br/>(cpp-httplib)"]
+        ips["InputProcessingService<br/>CSV + image extractors"]
+        wls["WorkloadService<br/>JobService"]
+        sched["PriorityScheduler<br/>priority queue"]
+        pool["LocalWorkerPool<br/>bounded queue"]
+        exec["JobExecutor<br/>handler registry"]
         retry["RetryDispatcher"]
-        metrics["Metrics registry · /health · /ready"]
-        repos["Repository interfaces<br/>PostgreSQL · in-memory"]
+        metrics["Metrics<br/>/health · /ready"]
+        repos["Repositories<br/>PostgreSQL · in-memory"]
 
         api --> ips --> wls
         api --> wls
         wls --> sched --> pool --> exec
-        retry -->|re-schedules due Retrying jobs| sched
+        retry -->|due retries| sched
         exec --> repos
         wls --> repos
         retry --> repos
         api --> metrics
     end
 
-    ips -.->|tesseract CLI subprocess| ocr[[Tesseract OCR]]
-    repos --> pg[(PostgreSQL)]
+    ips -.->|subprocess| ocr[["Tesseract OCR"]]
+    repos --> pg[("PostgreSQL")]
 ```
 
 The C++ code is split into two layers. `engine/` holds the domain model, services, concurrency
@@ -120,16 +120,16 @@ dashboard only talks to the public HTTP API.
 
 ```mermaid
 flowchart LR
-    src["CSV / image / screenshot"] --> ext["Extraction<br/>CsvExtractor · ImageExtractor + OCR"]
-    ext --> rec["Structured records<br/>(domain-agnostic)"]
-    rec --> map["Mapping + normalization<br/>(Users / Products / Categories)"]
-    map --> val["Validation<br/>row-level rejections"]
-    val --> prev["Preview<br/>creates nothing"]
-    prev --> conf["Confirm<br/>re-validates every record"]
+    src["CSV / image"] --> ext["Extraction<br/>(CSV parser, OCR)"]
+    ext --> rec["Structured<br/>records"]
+    rec --> map["Mapping +<br/>normalization"]
+    map --> val["Validation<br/>(per row)"]
+    val --> prev["Preview<br/>(creates nothing)"]
+    prev --> conf["Confirm<br/>(re-validates)"]
     conf --> wl["Workload"]
     wl --> jobs["Jobs"]
-    jobs --> eng["C++ execution engine"]
-    eng --> db[(PostgreSQL)]
+    jobs --> eng["C++ engine"]
+    eng --> db[("PostgreSQL")]
 ```
 
 More detail: [`docs/architecture/overview.md`](docs/architecture/overview.md) (components and
@@ -251,18 +251,17 @@ example `personl@example.com` instead of `person1@example.com`), which is why th
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Pending: job created
-    Pending --> Queued: accepted by scheduler
+    [*] --> Pending: created
+    Pending --> Queued: accepted
     Queued --> Running
     Running --> Succeeded
-    Running --> Failed: non-retryable failure
-    Running --> Retrying: retryable failure, attempts left
-    Retrying --> Queued: backoff elapsed (RetryDispatcher)
-    Running --> DeadLetter: retryable failure, attempts exhausted
+    Running --> Failed: not retryable
+    Running --> Retrying: retryable
+    Retrying --> Queued: backoff elapsed
+    Running --> DeadLetter: attempts used up
     Succeeded --> [*]
     Failed --> [*]
     DeadLetter --> [*]
-    Cancelled --> [*]
 ```
 
 Any job that is not yet terminal (pending, queued, running, or retrying) can also be cancelled

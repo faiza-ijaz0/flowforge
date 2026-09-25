@@ -8,7 +8,7 @@ export default function SettingsPage() {
     <div>
       <PageHeader
         title="Settings"
-        description="Server-side configuration (see engine/include/flowforge/infra/config.hpp) is environment-variable driven and not editable from the dashboard, by design -- see .env.example."
+        description="Server configuration comes from environment variables (see .env.example) and is read once at startup. It cannot be edited from the dashboard."
       />
 
       <Card className="mb-4">

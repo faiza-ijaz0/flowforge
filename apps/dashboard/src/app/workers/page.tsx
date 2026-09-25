@@ -17,7 +17,7 @@ export default async function WorkersPage() {
     <div>
       <PageHeader
         title="Workers"
-        description="The worker list below is real (GET /api/v1/workers), but there is no worker process that registers itself yet."
+        description="Worker records registered by the server's in-process worker pool. Records from earlier server runs are not removed yet, so older entries may appear as idle."
       />
 
       {loadError ? (
@@ -52,7 +52,7 @@ export default async function WorkersPage() {
       ) : (
         <NotYetImplemented
           feature="Worker process registration"
-          note="GET /api/v1/workers is live and returns an empty list; a worker process that registers/heartbeats is planned for Phase 2."
+          note="No workers are registered. Workers appear once the server starts its worker pool; standalone worker processes are not supported yet."
         />
       )}
     </div>

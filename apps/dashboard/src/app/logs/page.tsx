@@ -6,11 +6,11 @@ export default function LogsPage() {
     <div>
       <PageHeader
         title="Logs"
-        description="FlowForge's structured logger (engine/include/flowforge/infra/logger.hpp) writes to stdout today."
+        description="The server writes structured logs to standard output."
       />
       <NotYetImplemented
         feature="Log aggregation"
-        note="There is no log shipping/query endpoint yet -- read server logs directly from stdout (or `docker compose logs server`) until a log pipeline is built."
+        note="There is no log query API yet. Read the server's standard output directly, or run `docker compose logs server` when using Docker."
       />
     </div>
   );

@@ -51,7 +51,7 @@ export default function JobsPage() {
     <div>
       <PageHeader
         title="Jobs"
-        description="Live job records from the FlowForge API. A job with a job type is submitted to the real Scheduler, dispatched to a real WorkerPool, and actually executed by the matching handler -- open a job to see its real execution attempt history."
+        description="Every job known to the server. Jobs with a job type are scheduled and executed by the worker pool; open a job to see its execution attempts."
       />
 
       <div className="mb-6">

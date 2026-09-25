@@ -49,7 +49,7 @@ export default function CategoriesPage() {
     <div>
       <PageHeader
         title="Categories"
-        description="Real, persisted category records. Every row here was written by handlers::CategoryProcessHandler when its category.process job executed -- see docs/architecture/category-processing.md. Import more via the Processing Center."
+        description="Categories saved by completed category import jobs, including each category's parent. Import more from the Processing Center."
         action={
           <Link
             href="/processing"

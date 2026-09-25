@@ -9,10 +9,17 @@ belong in the README.
 If you're on Windows using the [WinLibs](https://winlibs.com/) UCRT+LLVM distribution (GCC + clang
 bundled together), **configure CMake with `g++`, not `clang++`**. clang targeting
 `x86_64-w64-mingw32` against this libstdc++ build has a reproducible linker bug affecting any binary
-that transitively uses `std::call_once` (which `std::future`consequently `ThreadPool::submit`
+that transitively uses `std::call_once` (which `std::future`, and consequently `ThreadPool::submit`,
 uses internally) — see `docs/architecture/overview.md` §11 for the full explanation and the exact
 error signature. clang is still useful on Windows for `clang-format` and `clang-tidy`; just don't use
-it as `CMAKE_CXX_COMPILER` there. On Linux/macOS, clang works fine end-to-end.
+it as `CMAKE_CXX_COMPILER` there.
+
+## Linux/macOS: clang 19 or newer
+
+With libstdc++, clang must be **version 19 or newer**: libstdc++ only exposes `std::expected`
+(behind `flowforge::Result`, used throughout) to clang ≥ 19. Older clang fails with
+`no member named 'unexpected' in namespace 'std'` — this is why CI installs `clang-19` rather than
+Ubuntu 24.04's default clang 18, and why the server image builds on Debian trixie.
 
 ## PostgreSQL setup
 
@@ -41,7 +48,13 @@ winget install PostgreSQL.PostgreSQL.17
 ```
 
 Then make sure `libpq.dll` is reachable at runtime — add PostgreSQL's `bin` directory (e.g.
-`C:\Program Files\PostgreSQL\17\bin`) to `PATH`. See `docs/architecture/overview.md` §11 ("Toolchain
+`C:\Program Files\PostgreSQL\17\bin`) to `PATH`, **after** the compiler's `bin` directory.
+PostgreSQL's `bin` also contains its own `libwinpthread-1.dll`, a different build from the
+toolchain's. If Windows loads that copy first, FlowForge binaries run against a threading runtime
+they were not built with: during the Phase 3I release run, `ThreadPoolTest.RunsAllSubmittedTasks`
+deadlocked inside that DLL's `pthread_cond_signal` (every thread was blocked inside
+`libwinpthread`; no FlowForge lock was held). With the toolchain first on `PATH`, the same
+concurrency tests passed 30 repeats in a row. See `docs/architecture/overview.md` §11 ("Toolchain
 notes") for why Windows/MinGW needs `libpq.lib` specifically rather than `libpq.a`, and why that's
 handled automatically by `CMakeLists.txt` rather than something you need to configure by hand.
 

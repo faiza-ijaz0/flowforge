@@ -21,7 +21,7 @@ export default async function MetricsPage() {
     <div>
       <PageHeader
         title="Metrics"
-        description="Raw output of GET /metrics -- FlowForge's in-memory counters/gauges/histograms rendered as plain text (not yet Prometheus exposition format; see infra/metrics.hpp)."
+        description="Raw output of GET /metrics: the server's in-memory counters, gauges, and histograms as plain text (not Prometheus exposition format)."
       />
       <Card>
         {result.ok ? (

@@ -6,11 +6,11 @@ export default function QueuesPage() {
     <div>
       <PageHeader
         title="Queues"
-        description="Logical queue configuration (see database/migrations/0003_create_queues.sql and domain::QueueConfig)."
+        description="Logical job queues defined in the database."
       />
       <NotYetImplemented
         feature="Queue management"
-        note="There is no /api/v1/queues endpoint yet -- queues currently only exist as rows seeded via database/seeds/dev_seed.sql."
+        note="There is no queue API yet. Queues are defined by database seed data (database/seeds/dev_seed.sql)."
       />
     </div>
   );

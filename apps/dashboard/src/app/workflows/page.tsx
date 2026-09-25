@@ -17,7 +17,7 @@ export default async function WorkflowsPage() {
     <div>
       <PageHeader
         title="Workflows"
-        description="The workflow list below is real (GET /api/v1/workflows), but there is no way to create or run a workflow yet."
+        description="Workflows stored in the database. Creating and running workflows is not implemented yet."
       />
 
       {loadError ? (
@@ -50,7 +50,7 @@ export default async function WorkflowsPage() {
       ) : (
         <NotYetImplemented
           feature="Workflow creation and execution"
-          note="GET /api/v1/workflows is live and returns an empty list; POST /api/v1/workflows and the DAG scheduler are planned for Phase 2."
+          note="There is no API to create or run workflows yet, so this list stays empty."
         />
       )}
     </div>

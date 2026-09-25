@@ -84,6 +84,20 @@ records — `PRODS` for `PROD5`, `Knife1e` for `Knife10`, `personl@example.com` 
 `person1@example.com`, `Category 0@3` for `Category 003`. They are visible in the preview table,
 which is the only review step before they are persisted. See Known Limitations.
 
+### 0.5 Release pass (Phase 3I, v1.0.0)
+
+The final regression run before tagging found two more issues:
+
+| # | Issue | Evidence | Resolution |
+|---|---|---|---|
+| 14 | **Lost-update race on dispatch (core engine).** `WorkloadService`, `POST /api/v1/jobs`, and `RetryDispatcher` all scheduled a job *before* persisting `Queued`. `mark_queued()` is a read-modify-write, so a worker could finish the job between that read and write, and the late `Queued` write then overwrote the finished row. Present since the workload model was introduced; timing-dependent. | `HundredCategoryCsvFlowReconcilesAgainstRealPostgres` failed once: workload stuck at 94/95, one job `queued` with `attempt_count 0`, while `job_attempts` recorded a successful attempt (`.579`–`.581`) and the job row was written as `queued` at `.583`. | `Queued` is now persisted before `schedule()`; a rejection restores the previous row (`JobService::revert_queued`, or the original `Retrying` row with its `updated_at`). 4 regression tests use a probe scheduler that records the persisted status at the moment of scheduling: the two ordering tests **fail on the old code and pass on the fix**. After the fix, the three 100-record CSV acceptance tests and the hierarchy test each passed 10/10 repeats. |
+| 15 | **Windows only: mismatched threading runtime DLL.** With PostgreSQL's `bin` ahead of the compiler's on `PATH`, test binaries loaded PostgreSQL's bundled `libwinpthread-1.dll` (52 KB; the toolchain's is 94 KB). `ThreadPoolTest.RunsAllSubmittedTasks` deadlocked: `gdb` showed every thread blocked inside that DLL (the main thread in `pthread_cond_signal`, after `BlockingQueue::push` had released its mutex). | Hung process inspected with `gdb` (5 threads, CPU time frozen for 10+ minutes). | Environment issue, not a FlowForge bug: with the toolchain first on `PATH`, the 53 concurrency tests passed 30/30 repeats. The required `PATH` order is now documented in the README and `docs/development/getting-started.md`. Linux/CI is unaffected. |
+
+Release-pass results: 654 backend tests (551 engine + 103 server) passed against PostgreSQL with
+Tesseract, 0 skipped; `tests/e2e/smoke-test.py --ocr` passed against a local PostgreSQL-backed
+server (queued = started = succeeded = 195 in `/metrics`); dashboard lint/typecheck/build and
+clang-format clean.
+
 ### 0.4 Test counts (follow-up)
 
 | Suite | Count | Result |

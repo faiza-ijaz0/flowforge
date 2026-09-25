@@ -204,10 +204,13 @@ Lists workflows. Currently always returns an empty list — there is no `POST` t
 ## Workers
 
 ### `GET /api/v1/workers`
-Lists registered workers. Currently always returns an empty list — no worker process registers
-itself yet.
+Lists worker records. The server's in-process worker pool registers one record per worker thread
+at startup (`FLOWFORGE_WORKER_POOL_SIZE`). Records are never removed, so with PostgreSQL the list
+also contains `idle` records from earlier server runs. There is no standalone worker process and no
+pagination on this endpoint.
 ```json
-{ "workers": [] }
+{ "workers": [ { "id": "…", "hostname": "…", "status": "idle",
+                 "registered_at": "…", "last_heartbeat": "…" } ] }
 ```
 
 ## Path IDs

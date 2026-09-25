@@ -50,7 +50,7 @@ export default function UsersPage() {
     <div>
       <PageHeader
         title="Users"
-        description="Import and process users through FlowForge. Each upload creates one workload; every row becomes a real user.process job, dispatched through the existing PriorityScheduler/WorkerPool, and persisted into a dedicated users table -- the same pattern Products/Categories use. Every row here was written by handlers::UserProcessHandler when its user.process job executed."
+        description="Import users from a CSV file. Each upload creates one workload with a job per valid row, and each completed job saves its user to the database."
         action={
           <Link
             href="/processing"
@@ -92,7 +92,7 @@ export default function UsersPage() {
       {!loading && !error && users.length === 0 && (
         <Card>
           <div className="text-sm text-[var(--muted)]">
-            No users yet. Import a CSV or image above to get started.
+            No users yet. Import a CSV above, or an image from the Processing Center.
           </div>
         </Card>
       )}

@@ -101,7 +101,7 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
         <div className="p-4 pb-0 text-sm font-medium">
           Execution attempts{" "}
           <span className="text-xs font-normal text-[var(--muted)]">
-            (real handler invocations -- see docs/architecture/execution-model.md)
+            (one row per execution attempt)
           </span>
         </div>
         <div className="overflow-x-auto">

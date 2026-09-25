@@ -1,474 +1,615 @@
 # FlowForge
 
-FlowForge is a **production-style** job processing and workload orchestration platform: upload a
-CSV or an image/screenshot, watch it become a real workload of real jobs, dispatched through a
-concurrent C++ scheduler and worker pool, persisted in PostgreSQL, and observable end-to-end from a
-Next.js dashboard. It is built around a concurrent C++ engine, a REST API, PostgreSQL persistence,
-and an operator dashboard that never shows a fabricated number.
+**A C++-powered workload processing platform for high-throughput structured data ingestion and
+concurrent job execution.**
 
-This repository is at **Phase 3H: Production Readiness & Final Validation**. The execution core
-(Phase 1–2B) remains the foundation and is unchanged: a job dispatched by
-`engine::PriorityScheduler` is genuinely executed — `Queued -> Running ->
-Succeeded`/`Failed`/`Retrying`/`DeadLetter`/`Cancelled` — through `HandlerRegistry`/`IJobHandler`,
-with a real `job_attempts` row persisted per attempt, cooperative cancellation/timeout, and a real,
-restart-safe retry engine (`RetryDispatcher`). Phase 3A–3F added the **Workload** model (a logical
-grouping of jobs submitted as one unit — e.g. one CSV import) and a source-/target-agnostic
-**input processing pipeline** (CSV and image/screenshot-via-OCR sources, crossed with
-Users/Products/Categories targets). Phase 3G unified the dashboard into one coherent, navigable
-product. **Phase 3H (this phase)** closed the last domain-persistence gap — **Users, Products, and
-Categories are now all real, persisted domains** with their own PostgreSQL tables, repositories,
-and paginated read APIs — added real 100+ record automated acceptance coverage (CSV and real-OCR
-image sources, all three domains, against a real PostgreSQL database), found and fixed a genuine
-Windows migration-tooling bug via real fresh-database and upgrade-path testing, ran a focused
-security probe battery, measured a real performance baseline, and produced complete operational
-documentation (deployment, backup/recovery, release checklist). See
-[`docs/architecture/phase-3h-production-readiness.md`](docs/architecture/phase-3h-production-readiness.md)
-for the full report — including a follow-up pass that found CI had never run (it triggered on
-`main`; the branch is `master`), fixed a category-hierarchy race and silent in-submission duplicate
-collapsing found through real browser runs, fixed five Docker defects, and added a real Docker
-build + runtime smoke test to CI. Gaps it does **not** claim to close: no authentication, and Docker
-not yet runtime-validated anywhere except the CI job that now does so. See also
-[`docs/architecture/phase-3g-audit.md`](docs/architecture/phase-3g-audit.md),
-[`docs/architecture/overview.md`](docs/architecture/overview.md),
-[`docs/architecture/execution-model.md`](docs/architecture/execution-model.md),
-[`docs/architecture/workload-model.md`](docs/architecture/workload-model.md), and
-[`docs/architecture/input-processing.md`](docs/architecture/input-processing.md) for what's real
-versus interface-only, and why. Workflow DAG execution is still deliberately not yet implemented.
+[![CI](https://github.com/faiza-ijaz0/flowforge/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/faiza-ijaz0/flowforge/actions/workflows/ci.yml)
+![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)
+![CMake](https://img.shields.io/badge/CMake-%E2%89%A53.24-064F8C?logo=cmake&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-15-000000?logo=nextdotjs&logoColor=white)
 
-## Why FlowForge exists
+FlowForge turns CSV files and images of tables into validated **workloads** of **jobs**, executes
+them on a concurrent C++ engine (priority scheduler, bounded worker pool, retries, dead letters),
+persists the results in PostgreSQL, and exposes every step through a REST API and a Next.js
+operations dashboard.
 
-Most "job queue" projects are either a thin wrapper around a database table or a toy demonstrating a
-single pattern. FlowForge is an attempt to build the real thing: a job engine with proper concurrency
-primitives, typed configuration, structured error handling, a persistence layer that can be swapped
-without touching business logic, and an API/dashboard that never lies about what's actually
-implemented.
+It is a production-style, portfolio-grade systems project: tested against a real PostgreSQL
+database, validated in CI (including a Docker build and runtime smoke test), and explicit about the
+trade-offs it has not addressed yet (see [Known limitations](#known-limitations)).
 
-## Example workflow
+---
 
-1. Open the dashboard's **Processing Center** (`/processing`), pick a target (Users, Products, or
-   Categories) and a source (CSV, image, or screenshot), and upload a file.
-2. CSV+Users submits directly; every other combination goes through an explicit
-   **preview** step first (`POST /api/v1/process/preview` — extracts and validates records,
-   creates nothing yet) so you can see exactly what will be created before confirming
-   (`POST /api/v1/process/confirm`).
-3. Confirming creates a real **Workload** (`POST /api/v1/workloads` under the hood) — one Job per
-   valid record, each dispatched through the same `PriorityScheduler`/`LocalWorkerPool` pipeline as
-   any other job.
-4. The dashboard takes you straight to that workload's detail page (`/workloads/{id}`), which polls
-   `GET /api/v1/workloads/{id}` and shows real, live-computed progress — queued/running/succeeded/
-   failed, plus retrying/dead-letter sub-counts — never a cached or invented number.
-5. Drill into any individual job (`/jobs/{id}`) for its real execution attempt history
-   (`GET /api/v1/jobs/{id}/attempts`) — worker, outcome, duration, error — or browse
-   `/workloads`, `/jobs`, `/products`, `/categories` for the full, paginated history.
-6. Check `/health` for the same live `GET /ready` breakdown (database, scheduler, worker pool,
-   retry dispatcher) an orchestrator's healthcheck would use.
+## Contents
 
-## Architecture at a glance
+[Overview](#overview) · [Key capabilities](#key-capabilities) · [Architecture](#architecture) ·
+[Engineering highlights](#engineering-highlights) · [Processing domains](#supported-processing-domains) ·
+[Processing workflow](#processing-workflow) · [Reliability model](#reliability-model) ·
+[Technology stack](#technology-stack) · [Project structure](#project-structure) ·
+[Getting started](#getting-started) · [Configuration](#environment-configuration) · [API](#api) ·
+[Testing](#testing) · [CI](#cicd) · [Docker](#docker) · [Security](#security-considerations) ·
+[Known limitations](#known-limitations) · [Roadmap](#roadmap) · [Documentation](#documentation)
+
+## Overview
+
+Bulk data arrives in inconvenient shapes: a spreadsheet export, a screenshot of a table, a scanned
+list. Turning it into database records usually means ad-hoc scripts with no validation, no review
+step, no retry behavior, and no visibility into what happened to each row.
+
+FlowForge treats every import as a unit of work that can be inspected and reasoned about:
 
 ```
-apps/dashboard  --(HTTP/JSON)-->  apps/server  -->  engine  -->  spdlog
-   (Next.js)                      (C++ HTTP API)   (C++ domain +
-                                                      business logic)
+Input (CSV / image / screenshot)
+  → Extraction (CSV parser or Tesseract OCR)
+  → Normalization + validation (per domain)
+  → Preview (nothing is created yet)
+  → Confirmation
+  → Workload (one per submission)
+  → Jobs (one per accepted record)
+  → Priority scheduler → bounded worker pool → job executor
+  → PostgreSQL
+  → Observability (live progress, attempts, metrics, readiness)
 ```
 
-The engine (`engine/`) has zero HTTP or JSON dependencies and is fully testable on its own. See
-[`docs/architecture/overview.md`](docs/architecture/overview.md) for the full component breakdown,
-dependency direction, data flow, and a Mermaid diagram.
+Invalid records are rejected with a reason and a row number, before any job is created. Accepted
+records become jobs that run concurrently, retry on transient failures, and land in a dead-letter
+state when their retry budget is exhausted. Workload progress is computed from those jobs on every
+read, so it is never a cached counter that can drift.
+
+## Key capabilities
+
+- **Concurrent C++ execution engine**: priority scheduler, bounded worker pool, and job executor
+  with cooperative cancellation and per-attempt timeouts
+- **Workload/job model**: one workload per submission, one job per accepted record, with live
+  progress (queued, running, succeeded, failed, retrying, dead-letter)
+- **Retry and dead-letter handling**: per-job retry policy with exponential backoff; a
+  poll-based, restart-safe retry dispatcher
+- **PostgreSQL persistence**: repository interfaces with PostgreSQL (libpqxx) and in-memory
+  implementations, a connection pool, parameterized SQL, and 16 numbered migrations
+- **CSV ingestion** and **image/screenshot ingestion via Tesseract OCR**
+- **Preview before confirmation**: extraction and validation create nothing until the user confirms
+- **Three processing domains**: Users, Products, and Categories (with parent/child hierarchies),
+  each persisted to its own table
+- **Observability**: `/health` (liveness), `/ready` (real dependency checks), `/metrics`, and per-job
+  execution attempt history
+- **Paginated read APIs** with totals for jobs, workloads, workload items, users, products, and
+  categories
+- **Docker images and Compose stack** with healthchecks, non-root containers, and a migration
+  service
+- **CI** covering Debug/Release builds, sanitizers, PostgreSQL integration, formatting, the
+  dashboard, and a Docker runtime smoke test
+
+## Architecture
+
+```mermaid
+flowchart TB
+    user([Operator]) --> dash["Next.js dashboard<br/>(TypeScript, Tailwind)"]
+    dash -->|HTTP / JSON| api
+
+    subgraph server["flowforge_server (C++23)"]
+        api["HTTP API<br/>cpp-httplib · CORS allowlist · request validation"]
+        ips["InputProcessingService<br/>CSV extractor · image extractor (OCR)"]
+        wls["WorkloadService / JobService"]
+        sched["PriorityScheduler<br/>PriorityBlockingQueue"]
+        pool["LocalWorkerPool<br/>bounded dispatch queue"]
+        exec["JobExecutor<br/>HandlerRegistry → IJobHandler"]
+        retry["RetryDispatcher"]
+        metrics["Metrics registry · /health · /ready"]
+        repos["Repository interfaces<br/>PostgreSQL · in-memory"]
+
+        api --> ips --> wls
+        api --> wls
+        wls --> sched --> pool --> exec
+        retry -->|re-schedules due Retrying jobs| sched
+        exec --> repos
+        wls --> repos
+        retry --> repos
+        api --> metrics
+    end
+
+    ips -.->|tesseract CLI subprocess| ocr[[Tesseract OCR]]
+    repos --> pg[(PostgreSQL)]
+```
+
+The C++ code is split into two layers. `engine/` holds the domain model, services, concurrency
+primitives, persistence, and infrastructure (config, logging, metrics), with no HTTP or JSON
+dependency. `apps/server/` holds the HTTP layer and the composition root (`App::create`). The
+dashboard only talks to the public HTTP API.
+
+### Input-processing pipeline
+
+```mermaid
+flowchart LR
+    src["CSV / image / screenshot"] --> ext["Extraction<br/>CsvExtractor · ImageExtractor + OCR"]
+    ext --> rec["Structured records<br/>(domain-agnostic)"]
+    rec --> map["Mapping + normalization<br/>(Users / Products / Categories)"]
+    map --> val["Validation<br/>row-level rejections"]
+    val --> prev["Preview<br/>creates nothing"]
+    prev --> conf["Confirm<br/>re-validates every record"]
+    conf --> wl["Workload"]
+    wl --> jobs["Jobs"]
+    jobs --> eng["C++ execution engine"]
+    eng --> db[(PostgreSQL)]
+```
+
+More detail: [`docs/architecture/overview.md`](docs/architecture/overview.md) (components and
+dependency direction), [`execution-model.md`](docs/architecture/execution-model.md) (scheduler,
+worker pool, executor, retries), [`workload-model.md`](docs/architecture/workload-model.md), and
+[`input-processing.md`](docs/architecture/input-processing.md).
+
+## Engineering highlights
+
+### Concurrent execution
+
+- **`PriorityScheduler`** accepts jobs into a bounded **`PriorityBlockingQueue`** (priority order,
+  FIFO within a priority) and drains it with a configurable number of dispatch threads.
+- **`LocalWorkerPool`** executes jobs on a fixed set of worker threads fed by its own bounded
+  dispatch queue, so concurrency is capped at `FLOWFORGE_WORKER_POOL_SIZE` regardless of input size.
+- **`JobExecutor`** resolves each job's handler through a `HandlerRegistry` (no job-type switch
+  statements), records a `job_attempts` row per attempt, and enforces a cooperative per-attempt
+  timeout. Cancellation is cooperative too: threads are never forcibly killed.
+- **Backpressure** is explicit. A full scheduler or worker-pool queue rejects new work with a
+  `Conflict` error and increments a dedicated metric instead of growing without bound.
+
+### Reliability
+
+- Each job carries a **retry policy** (default 3 attempts, 1 s initial backoff, ×2 multiplier,
+  60 s cap). A handler marks each failure as retryable or not; non-retryable failures (such as
+  invalid data) fail immediately.
+- The **`RetryDispatcher`** polls for `Retrying` jobs whose backoff has elapsed and re-submits them
+  through the same scheduler. Because it is poll-based, not an in-memory timer, pending retries
+  survive a server restart when PostgreSQL is used.
+- Jobs that exhaust their attempts move to **dead letter**; every attempt stays visible through
+  `GET /api/v1/jobs/{id}/attempts`.
+- **Workload reconciliation**: a workload's counts are derived from its jobs on every read, and the
+  100-record acceptance tests assert `submitted = accepted + rejected` and
+  `accepted = jobs = succeeded` exactly.
+- **No lost updates on dispatch**: a job's `queued` status is persisted *before* the job is handed
+  to the scheduler, so a worker that finishes quickly can never have its result overwritten by a late
+  status write. This was a real race, caught by the 100-record acceptance tests during release
+  validation and fixed with regression tests (see
+  [`execution-model.md` §8](docs/architecture/execution-model.md)).
+- **`/ready`** checks the database pool, scheduler, worker pool, and retry dispatcher and returns
+  `503` when any of them is unavailable; **`/health`** is a plain liveness check.
+
+### Persistence
+
+- Repository interfaces (`IJobRepository`, `IWorkloadRepository`, `IProductRepository`, …) have both
+  **PostgreSQL** (libpqxx) and **in-memory** implementations, selected at startup by
+  `FLOWFORGE_DATABASE_URL`. Staging and production refuse to start without a database.
+- A bounded **connection pool** (`FLOWFORGE_DB_POOL_SIZE`), **parameterized queries throughout**,
+  and PostgreSQL error mapping into typed application errors.
+- **16 numbered SQL migrations** applied by a small runner (`scripts/db-migrate.sh` / `.ps1`) that
+  tracks versions in `schema_migrations`. CI validates the runner itself against a fresh database,
+  including a deliberately broken migration that must abort without being recorded.
+- Domain records are **upserted by natural key** (`email`, `sku`, `slug`): re-importing updates rows
+  in place, while duplicate keys *within* one submission are rejected.
+
+### Input processing
+
+- A single, domain-agnostic **`InputProcessingService`** handles every source × target pair:
+  extractors produce generic `StructuredRecord`s, and small per-domain mapping functions turn them
+  into typed, validated records. Adding a domain does not touch extraction.
+- **CSV parsing** handles quoting, malformed rows (rejected per row, not per file), invalid UTF-8,
+  duplicate headers, and size/row limits.
+- **OCR sits behind an `IOcrProvider` abstraction**; the implementation runs the Tesseract CLI as a
+  subprocess and reconstructs table rows from word positions. Uploads are identified by their
+  **magic bytes** (PNG, JPEG, WebP), not by file extension.
+- **Confirm never trusts the client**: every record is re-validated server-side, even though it
+  normally comes straight from the preview response.
+- Category imports resolve **parent/child hierarchies**. A parent can be in the same submission: the
+  child's job is retried until the parent's job has committed.
+
+### Observability
+
+- `/metrics` exposes counters, gauges, and a histogram for HTTP requests and errors, job
+  creation/rejection, scheduling, backpressure, worker completions, timeouts, retries, dead letters,
+  database errors, and connection-pool usage (plain text, not Prometheus format).
+- Every job has a persisted **execution attempt history** (worker, outcome, duration, error).
+- The dashboard polls workload progress live and stops polling once the workload is terminal.
+- Structured logging (spdlog behind a facade) with an optional one-JSON-object-per-line format.
+
+### Security
+
+Parameterized SQL; per-row input validation; upload limits (2 MB CSV, 6 MB image, 8 MB HTTP payload,
+256 KB job payload); magic-byte image validation; the OCR subprocess launched with an argument
+vector (never through a shell) and a timeout; an exact-match CORS allowlist; malformed path IDs
+rejected with `400` before reaching the database; generic 5xx messages that never echo internal
+errors; non-root Docker containers. See [Security considerations](#security-considerations).
+
+## Supported processing domains
+
+| Domain | CSV | Image / screenshot (OCR) | Persistence | Workload + jobs |
+|---|---|---|---|---|
+| **Users** | ✓ (processed directly, or via the `/users` import wizard) | ✓ (with preview) | `users` table, upsert by email | ✓ `user.process` |
+| **Products** | ✓ (with preview) | ✓ (with preview) | `products` table, upsert by SKU | ✓ `product.process` |
+| **Categories** | ✓ (with preview) | ✓ (with preview) | `categories` table, upsert by slug, parent/child hierarchy | ✓ `category.process` |
+
+A Users CSV is the one combination without a preview step. It is validated row by row and
+submitted directly, matching the dedicated Users import wizard.
+
+## Processing workflow
+
+A real run from the browser verification of the Users image flow:
+
+```
+Upload user_table_bulk_100.png (100 rows)
+  → Preview: 100 records, 97 valid, 3 invalid (rows 20, 40, 100: OCR-garbled emails), ~77% OCR confidence
+  → Confirm
+  → 1 workload
+  → 97 jobs
+  → PriorityScheduler → LocalWorkerPool → JobExecutor
+  → 97 users upserted into PostgreSQL
+  → workload succeeded: 97 / 97
+```
+
+The 97/3 split is specific to that test fixture and the Tesseract version used. It is **not** a
+general OCR accuracy figure. OCR can also produce values that pass validation but are wrong (for
+example `personl@example.com` instead of `person1@example.com`), which is why the preview exists.
+
+## Reliability model
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending: job created
+    Pending --> Queued: accepted by scheduler
+    Queued --> Running
+    Running --> Succeeded
+    Running --> Failed: non-retryable failure
+    Running --> Retrying: retryable failure, attempts left
+    Retrying --> Queued: backoff elapsed (RetryDispatcher)
+    Running --> DeadLetter: retryable failure, attempts exhausted
+    Succeeded --> [*]
+    Failed --> [*]
+    DeadLetter --> [*]
+    Cancelled --> [*]
+```
+
+Any job that is not yet terminal (pending, queued, running, or retrying) can also be cancelled
+through `POST /api/v1/jobs/{id}/cancel`; cancellation is cooperative, so a running handler stops at
+its next cancellation check.
+
+Every execution attempt increments the job's `attempt_count` and writes a `job_attempts` row, so a
+job that succeeded on its second attempt shows both attempts. A workload is `pending` or `queued` before
+any job progresses, `running` while any job is not yet terminal, `succeeded` when every job
+succeeded, and `failed` when every job is terminal and at least one did not succeed. Retrying and dead-lettered jobs are shown as separate sub-counts.
 
 ## Technology stack
 
-| Layer | Technology | Why |
-|---|---|---|
-| Engine | C++23, CMake, Ninja | Modern error handling (`std::expected`), strong concurrency primitives |
-| HTTP server | [cpp-httplib](https://github.com/yhirose/cpp-httplib) | Header-only, no external deps, right-sized for this phase's endpoint count |
-| JSON | [nlohmann/json](https://github.com/nlohmann/json) | De facto standard, header-only |
-| Logging | [spdlog](https://github.com/gabime/spdlog), behind a facade | Fast, structured, swappable without touching call sites |
-| Testing | GoogleTest, GoogleBenchmark | Industry standard, CTest integration |
-| Database | PostgreSQL via [libpqxx](https://github.com/jtv/libpqxx) | Real client library, parameterized queries, real connection pool -- see `docs/architecture/overview.md` §7 |
-| Dashboard | Next.js 15, TypeScript, Tailwind CSS | App Router, server components for real data fetching |
-| Infra | Docker, Docker Compose, GitHub Actions | Environment-driven config, no committed secrets |
+| Area | Technology |
+|---|---|
+| Core engine and API server | C++23, cpp-httplib, nlohmann/json, spdlog |
+| Database | PostgreSQL 16 via libpqxx (libpq) |
+| OCR | Tesseract (CLI, invoked as a subprocess) |
+| Dashboard | Next.js 15 (App Router), React 19, TypeScript 5, Tailwind CSS 3 |
+| Shared contracts | TypeScript types in `packages/shared` (npm workspaces) |
+| Build | CMake ≥ 3.24, Ninja; dependencies fetched with CMake `FetchContent` |
+| Testing | GoogleTest / CTest, Google Benchmark, Python smoke test, Bash migration check |
+| Code quality | clang-format, clang-tidy (optional), ASan + UBSan, ESLint, `tsc` |
+| Infrastructure | Docker, Docker Compose |
+| CI | GitHub Actions |
 
-## Repository structure
+## Project structure
 
 ```
 flowforge/
 ├── apps/
-│   ├── server/          C++ HTTP API (httplib + nlohmann::json; depends on engine/)
-│   └── dashboard/        Next.js + TypeScript operator dashboard
-├── packages/
-│   └── shared/            TypeScript types mirroring the API's JSON contracts
-├── engine/                 C++ core: domain model, services, concurrency primitives,
-│                           persistence interfaces, infra (config/logging/clock/metrics)
-│   ├── include/flowforge/  public headers
-│   ├── src/                 implementation
-│   └── tests/                GoogleTest unit + integration tests
-├── services/
-│   ├── scheduler/          placeholder for the Phase 2 standalone scheduler service
-│   └── workers/             placeholder for the Phase 2 standalone worker service
+│   ├── server/              C++ HTTP API: routes, JSON mapping, CORS, composition root, tests
+│   └── dashboard/           Next.js operations dashboard
+├── engine/                  C++ core (no HTTP/JSON dependency)
+│   ├── include/flowforge/   domain · engine · services · persistence · extractors ·
+│   │                        handlers · providers · infra
+│   ├── src/
+│   └── tests/               GoogleTest suites, including PostgreSQL-backed tests and fixtures
+├── packages/shared/         TypeScript types mirroring the API contracts
 ├── database/
-│   ├── migrations/          numbered SQL migrations (applied by scripts/db-migrate.sh)
-│   └── seeds/                 optional dev-only seed data
+│   ├── migrations/          0001–0016 numbered SQL migrations
+│   └── seeds/               optional development seed data
+├── tests/
+│   ├── integration/         check-migrations.sh: migration runner validation
+│   └── e2e/                 smoke-test.py: black-box HTTP smoke test of a running stack
 ├── benchmarks/              Google Benchmark suite for the concurrency primitives
-├── infra/
-│   ├── docker/                Dockerfiles for server + dashboard
-│   └── monitoring/            placeholder for future Prometheus/Grafana config
-├── docs/
-│   ├── architecture/           architecture overview, per-domain design docs, and phase audits
-│   ├── api/                    API reference (`reference.md`)
-│   ├── development/            contributor setup guide (`getting-started.md`)
-│   └── operations/             deployment, backup/recovery, release checklist
-├── scripts/                  db-migrate.sh/.ps1 and other dev scripts
-├── cmake/                    CompilerWarnings.cmake, Sanitizers.cmake, StaticAnalysis.cmake
-├── CMakeLists.txt
+├── infra/docker/            Dockerfiles for the server and dashboard
+├── scripts/                 db-migrate.sh / db-migrate.ps1
+├── cmake/                   compiler warnings, sanitizers, static analysis
+├── docs/                    architecture, API reference, development, operations
 ├── docker-compose.yml
 └── .env.example
 ```
 
-## Development setup
+`services/scheduler/` and `infra/monitoring/` contain only placeholder READMEs for future
+standalone services and monitoring configuration.
+
+## Getting started
 
 ### Prerequisites
 
-- A C++20/23 compiler. This repo was developed on Windows via the [WinLibs](https://winlibs.com/)
-  UCRT+LLVM distribution, which bundles both **GCC 14** and **clang 19**. Use **g++** as
-  `CMAKE_CXX_COMPILER` on Windows/MinGW: clang+libstdc++ on the `x86_64-w64-mingw32` target has a
-  known TLS relocation bug (`relocation truncated to fit: IMAGE_REL_AMD64_SECREL` against
-  `std::__once_call`/`std::__once_callable`) that breaks linking anything using `std::call_once`
-  transitively (e.g. `std::future`/`std::async` internals) — this is a Windows-COFF-specific
-  clang/libstdc++ incompatibility, not a FlowForge bug, and does not occur on Linux. clang remains
-  fully usable on Windows for `clang-format`/`clang-tidy`. CI builds with clang on Ubuntu, which is
-  unaffected.
-- [CMake](https://cmake.org/) >= 3.24 and [Ninja](https://ninja-build.org/).
-- [Node.js](https://nodejs.org/) >= 20 and npm, for the dashboard.
-- [Docker](https://www.docker.com/) and Docker Compose, for the full local stack (optional — the
-  server and dashboard both run natively without Docker).
-- PostgreSQL client tools (`psql`), only if you plan to run migrations (`scripts/db-migrate.sh`).
-- `libpq` (PostgreSQL's C client library), to build the PostgreSQL-backed persistence layer
-  (`FLOWFORGE_WITH_POSTGRES`, default `ON` — auto-disables with a warning if not found). See
-  [`docs/development/getting-started.md`](docs/development/getting-started.md), "PostgreSQL setup",
-  for install commands per OS.
+- A C++23 compiler:
+  - **Linux/macOS:** clang **19 or newer** (what CI uses) or GCC. clang 18 and older cannot compile
+    the project against libstdc++ (they do not see `std::expected`).
+  - **Windows:** GCC 14 from the [WinLibs](https://winlibs.com/) UCRT distribution (the local
+    development toolchain). Do not use clang as the compiler on Windows/MinGW; see
+    [`docs/development/getting-started.md`](docs/development/getting-started.md).
+- CMake ≥ 3.24 and Ninja
+- PostgreSQL 16 (or 17) with `libpq` and `psql`
+- Node.js ≥ 20 and npm
+- Tesseract OCR, only for image/screenshot processing (the server starts without it and reports
+  image preview as unsupported)
+- Docker with Compose (optional alternative; see [Docker](#docker))
 
-### Clone and configure
+### 1. Clone and configure
 
 ```bash
-# Windows/MinGW: use g++ (see the compiler note above for why not clang++)
-cmake -B build -G Ninja \
-  -DCMAKE_CXX_COMPILER=g++ \
-  -DCMAKE_C_COMPILER=gcc \
-  -DCMAKE_BUILD_TYPE=Debug
-
-# Linux/macOS: clang or gcc both work
-cmake -B build -G Ninja \
-  -DCMAKE_CXX_COMPILER=clang++ \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_BUILD_TYPE=Debug
+git clone https://github.com/faiza-ijaz0/flowforge.git
+cd flowforge
+cp .env.example .env
+cp apps/dashboard/.env.example apps/dashboard/.env.local
 ```
 
-The first configure fetches spdlog, nlohmann/json, cpp-httplib, GoogleTest, and Google Benchmark via
-CMake `FetchContent` — this requires network access and takes a few minutes; subsequent configures
-are cached.
-
-## Build instructions
+### 2. Create the database and run migrations
 
 ```bash
+# Option A: PostgreSQL in Docker
+docker compose up -d postgres
+
+# Option B: an existing PostgreSQL install
+psql -U postgres -c "CREATE ROLE flowforge LOGIN PASSWORD 'flowforge';"
+psql -U postgres -c "CREATE DATABASE flowforge OWNER flowforge;"
+
+# Apply migrations (idempotent)
+FLOWFORGE_DATABASE_URL=postgres://flowforge:flowforge@localhost:5432/flowforge ./scripts/db-migrate.sh
+# Windows PowerShell: $env:FLOWFORGE_DATABASE_URL="..."; .\scripts\db-migrate.ps1
+```
+
+### 3. Build the C++ server
+
+```bash
+# Linux/macOS
+cmake -B build -G Ninja -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19 -DCMAKE_BUILD_TYPE=Debug
+# Windows (MinGW)
+cmake -B build -G Ninja -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug
+
 cmake --build build -j
 ```
 
-Useful CMake options (pass as `-D<OPTION>=ON|OFF` at configure time):
+The first configure downloads dependencies with `FetchContent` (network access required).
+Useful options: `FLOWFORGE_BUILD_TESTS`, `FLOWFORGE_BUILD_BENCHMARKS`, `FLOWFORGE_WARNINGS_AS_ERRORS`,
+`FLOWFORGE_ENABLE_ASAN`, `FLOWFORGE_ENABLE_UBSAN`, `FLOWFORGE_ENABLE_TSAN`,
+`FLOWFORGE_ENABLE_CLANG_TIDY`.
 
-| Option | Default | Effect |
-|---|---|---|
-| `FLOWFORGE_BUILD_TESTS` | `ON` | Build `flowforge_engine_tests` / `flowforge_server_tests` |
-| `FLOWFORGE_BUILD_BENCHMARKS` | `ON` | Build `flowforge_benchmarks` |
-| `FLOWFORGE_WARNINGS_AS_ERRORS` | `OFF` | Escalate first-party-target warnings to errors (CI uses `ON`) |
-| `FLOWFORGE_ENABLE_ASAN` | `OFF` | AddressSanitizer |
-| `FLOWFORGE_ENABLE_UBSAN` | `OFF` | UndefinedBehaviorSanitizer |
-| `FLOWFORGE_ENABLE_TSAN` | `OFF` | ThreadSanitizer (mutually exclusive with ASan/UBSan) |
-| `FLOWFORGE_ENABLE_CLANG_TIDY` | `OFF` | Run clang-tidy during the build (requires `clang-tidy` on PATH) |
-
-Example: a sanitizer build (Linux/macOS with clang, or Windows with g++ — g++ also supports
-`-fsanitize=address,undefined` via the same `FLOWFORGE_ENABLE_ASAN`/`FLOWFORGE_ENABLE_UBSAN` flags) —
+### 4. Start the server
 
 ```bash
-cmake -B build-san -G Ninja -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER=gcc \
-  -DFLOWFORGE_ENABLE_ASAN=ON -DFLOWFORGE_ENABLE_UBSAN=ON
-cmake --build build-san -j
-ctest --test-dir build-san --output-on-failure
+FLOWFORGE_ENV=development \
+FLOWFORGE_DATABASE_URL=postgres://flowforge:flowforge@localhost:5432/flowforge \
+  ./build/apps/server/flowforge_server
+
+curl http://localhost:8080/ready
 ```
 
-## Running the server
+Without `FLOWFORGE_DATABASE_URL`, development mode uses in-memory repositories (nothing persists).
+On Windows, PostgreSQL's `bin` directory must be on `PATH` so `libpq.dll` can be found. Put it
+**after** the compiler's `bin` directory: PostgreSQL ships its own `libwinpthread-1.dll`, and if that
+copy is loaded instead of the toolchain's, the threading runtime can deadlock (observed in the
+thread-pool tests).
 
-```bash
-FLOWFORGE_ENV=development ./build/apps/server/flowforge_server
-```
-
-Then, in another shell:
-
-```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/ready    # 503 with {"status":"unavailable",...} if a dependency is down
-curl http://localhost:8080/metrics
-curl -X POST http://localhost:8080/api/v1/jobs \
-  -H 'Content-Type: application/json' \
-  -d '{"queue_name":"emails","payload":{"to":"a@example.com"}}'
-curl http://localhost:8080/api/v1/jobs
-```
-
-See [`.env.example`](.env.example) for every configuration variable.
-
-## Test instructions
-
-```bash
-ctest --test-dir build --output-on-failure
-```
-
-or run the test binaries directly for more verbose GoogleTest output:
-
-```bash
-./build/engine/tests/flowforge_engine_tests
-./build/apps/server/tests/flowforge_server_tests
-```
-
-By default this runs entirely against in-memory repositories — no PostgreSQL required. The
-PostgreSQL-backed integration tests (real repository tests, a restart-persistence acceptance test,
-and six 100+ record bulk acceptance tests covering Users/Products/Categories × CSV/real-OCR-image —
-see `docs/architecture/phase-3h-production-readiness.md` §4) are opt-in and `GTEST_SKIP()` unless a
-test database is configured; see
-[`docs/development/getting-started.md`](docs/development/getting-started.md), "Running PostgreSQL
-integration tests". As of Phase 3H: 537 engine tests + 100 server tests, all passing.
-
-## Benchmarks
-
-```bash
-./build/benchmarks/flowforge_benchmarks
-```
-
-## Dashboard
+### 5. Start the dashboard
 
 ```bash
 npm install
 npm run dev:dashboard
 ```
 
-Opens on `http://localhost:3000`. Set `NEXT_PUBLIC_API_URL` (in `apps/dashboard/.env.local`, copied
-from `apps/dashboard/.env.example`) if the server isn't on `http://localhost:8080`. The server's
-`FLOWFORGE_CORS_ALLOWED_ORIGIN` must match the dashboard's own origin exactly (default
-`http://localhost:3000` on both sides) — see `.env.example`.
+Open <http://localhost:3000> and start in the **Processing Center**. Sample inputs are in
+`engine/tests/fixtures/` (for example `products_bulk_100.csv` and `user_table_bulk_100.png`).
 
-Pages: **Overview** (`/`, real workload/job counts + `/ready` health breakdown) · **Processing
-Center** (`/processing`, upload → preview → confirm) · **Workloads** (`/workloads`,
-`/workloads/{id}`) · **Jobs** (`/jobs`, `/jobs/{id}`, with execution attempt history) · **Users** /
-**Products** / **Categories** (`/users`, `/products`, `/categories` — import wizard plus a real,
-paginated, persisted record list for all three, since Phase 3H) · **Workflows** / **Workers**
-(read-only) · **System health** (`/health`, live `GET /ready` polling) · **Metrics** (`/metrics`,
-raw text feed) · **Queues** / **Logs** / **Settings** (honest `NotYetImplemented` placeholders — no
-backend yet, never a fake empty state).
+## Environment configuration
+
+Every server variable is documented in [`.env.example`](.env.example). The ones that matter most:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `FLOWFORGE_ENV` | `development` | `development`, `test`, `staging`, or `production` |
+| `FLOWFORGE_DATABASE_URL` | unset | Unset: in-memory repositories (development/test only). **Required** in staging/production. |
+| `FLOWFORGE_DB_POOL_SIZE` | `8` | PostgreSQL connection pool size |
+| `FLOWFORGE_WORKER_POOL_SIZE` | `4` | Concurrent job executions |
+| `FLOWFORGE_SCHEDULER_QUEUE_CAPACITY` / `FLOWFORGE_WORKER_POOL_QUEUE_CAPACITY` | `1024` | Backpressure limits |
+| `FLOWFORGE_EXECUTION_TIMEOUT_MS` | `60000` | Cooperative per-attempt timeout |
+| `FLOWFORGE_CORS_ALLOWED_ORIGIN` | `http://localhost:3000` | Exact origin of the dashboard; no wildcards |
+| `FLOWFORGE_TESSERACT_PATH` | auto-detected | Path to the `tesseract` CLI if it is not on `PATH` |
+| `FLOWFORGE_LOG_LEVEL` / `FLOWFORGE_STRUCTURED_LOGGING` | `info` / `false` | `true` emits one JSON object per line |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8080` | Dashboard → API URL as seen by the browser. **Inlined at build time.** |
+
+- **Development:** in-memory or local PostgreSQL; the credentials in `.env.example` are local
+  placeholders only.
+- **Testing:** PostgreSQL-backed tests use `FLOWFORGE_TEST_DATABASE_URL` pointing at a disposable
+  database (the tests truncate the tables they touch). Without it, those tests report `SKIPPED`.
+- **Production:** set `FLOWFORGE_ENV=production`, a real `FLOWFORGE_DATABASE_URL`, the dashboard's
+  real origin in `FLOWFORGE_CORS_ALLOWED_ORIGIN`, and `FLOWFORGE_STRUCTURED_LOGGING=true`. `.env`
+  files are git-ignored; never commit real credentials. See
+  [`docs/operations/deployment.md`](docs/operations/deployment.md).
+
+## API
+
+REST over JSON under `/api/v1`, plus operational endpoints at the root. The full reference, including
+request and response shapes, limits, and error behavior, is in
+[`docs/api/reference.md`](docs/api/reference.md).
+
+| Group | Endpoints |
+|---|---|
+| Health and metrics | `GET /health`, `GET /ready`, `GET /metrics` |
+| Processing | `POST /api/v1/process/preview`, `POST /api/v1/process/confirm`, `POST /api/v1/process` |
+| Workloads | `POST /api/v1/workloads`, `POST /api/v1/workloads/user-imports`, `GET /api/v1/workloads`, `GET /api/v1/workloads/{id}`, `GET /api/v1/workloads/{id}/items` |
+| Jobs | `POST /api/v1/jobs`, `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}`, `GET /api/v1/jobs/{id}/attempts`, `POST /api/v1/jobs/{id}/cancel` |
+| Domain records | `GET /api/v1/users`, `GET /api/v1/products`, `GET /api/v1/categories` |
+| Read-only | `GET /api/v1/workers`, `GET /api/v1/workflows` |
+
+List endpoints take `limit`/`offset` (server-clamped) and return a `total`. Errors use one shape:
+`{"error": {"code": "...", "message": "..."}}`.
+
+## Testing
+
+Latest verified results (v1.0.0 release pass):
+
+| Suite | Result |
+|---|---|
+| `flowforge_engine_tests`: unit, concurrency, service, handler, and PostgreSQL repository tests | **551 passed** |
+| `flowforge_server_tests`: HTTP-level integration tests through the real `App` | **103 passed** |
+| **Backend total** (run against real PostgreSQL with Tesseract available, 0 skipped) | **654 passed, 0 failed** |
+| `tests/integration/check-migrations.sh`: fresh apply, schema/constraint/FK/index checks, idempotent re-run, broken-migration failure path | passed (bash and PowerShell runners locally; fresh database in CI) |
+| `tests/e2e/smoke-test.py`: black-box HTTP smoke test of a running stack, including real OCR | passed |
+| Dashboard: ESLint, `tsc --noEmit`, `next build` | clean |
+| `clang-format --dry-run --Werror` | clean |
+
+What the suites cover beyond unit tests:
+
+- **PostgreSQL-backed tests** for every repository, retry-to-success and retry-to-dead-letter
+  acceptance tests, and a restart-persistence test.
+- **100-record acceptance tests** for Users, Products, and Categories, each from CSV and from a real
+  image through Tesseract, reconciling submitted, accepted, and rejected records, jobs, and persisted
+  rows exactly.
+- **Browser verification** (manual, recorded in the
+  [production-readiness report](docs/architecture/phase-3h-production-readiness.md)) of all six
+  source × target flows and every category-hierarchy case, cross-checked against PostgreSQL.
 
 ```bash
-npm run lint:dashboard
-npm run typecheck:dashboard
-npm run build:dashboard
+ctest --test-dir build --output-on-failure            # in-memory by default
+
+# Include the PostgreSQL-backed tests (disposable database: tests truncate tables)
+FLOWFORGE_DATABASE_URL=postgres://flowforge:flowforge@localhost:5432/flowforge_test ./scripts/db-migrate.sh
+FLOWFORGE_TEST_DATABASE_URL=postgres://flowforge:flowforge@localhost:5432/flowforge_test \
+  ctest --test-dir build --output-on-failure
+
+# Smoke-test a running server (writes real product rows)
+python3 tests/e2e/smoke-test.py --api-url http://localhost:8080 --ocr
+
+# Dashboard
+npm run lint:dashboard && npm run typecheck:dashboard && npm run build:dashboard
 ```
 
-## Database
+## CI/CD
 
-The C++ server talks to PostgreSQL through a real, libpqxx-backed persistence layer (see
-`docs/architecture/overview.md` §7). To stand up a local database and apply the schema:
+[GitHub Actions](.github/workflows/ci.yml) runs on every push to `master` and on pull requests:
 
-```bash
-docker compose up -d postgres
-cp .env.example .env   # edit POSTGRES_* / FLOWFORGE_DATABASE_URL as needed
-docker compose run --rm migrate
-# or, without Docker:
-FLOWFORGE_DATABASE_URL=postgres://flowforge:flowforge@localhost:5432/flowforge ./scripts/db-migrate.sh
-```
+| Job | What it does |
+|---|---|
+| C++ build + test (Debug, Release) | clang 19, warnings as errors, full CTest run |
+| C++ ASan + UBSan | Sanitizer build and full CTest run |
+| PostgreSQL integration tests | `postgres:16` service; migration-runner check on a fresh database; migrations; full suite including PostgreSQL-backed and 100-record acceptance tests |
+| clang-format check | Formatting of all C++ sources |
+| Dashboard lint + typecheck + build | ESLint, `tsc`, `next build` |
+| Docker build + runtime smoke test | Builds both images, starts PostgreSQL, runs migrations, starts server + dashboard and waits for their healthchecks, runs `tests/e2e/smoke-test.py --ocr` against the containers |
 
-Then run the server with `FLOWFORGE_DATABASE_URL` set (see
-[`docs/development/getting-started.md`](docs/development/getting-started.md), "PostgreSQL setup") to
-use it — unset (the `development`/`test` default), the server uses in-memory repositories instead.
+All jobs passed on `732eefe` (run `36032434131`) and on `8a2ba95` (run `36120702923`). CI does not deploy anywhere; there is no
+deployment pipeline.
 
 ## Docker
 
 ```bash
-cp .env.example .env
-docker compose up --build
+cp .env.example .env        # set NEXT_PUBLIC_API_URL / CORS origin before building
+docker compose up --build -d
+docker compose run --rm migrate
 ```
 
-Starts PostgreSQL, the server (`:8080`), and the dashboard (`:3000`). Migrations are **not** run
-automatically (see `docs/architecture/overview.md` §7) — run `docker compose run --rm migrate`
-separately. Both the server and dashboard images run as non-root users and have `HEALTHCHECK`
-instructions. `NEXT_PUBLIC_API_URL` is a *build* argument (Next.js inlines it into the browser
-bundle), so rebuild the dashboard image after changing it. CI's `docker-validate` job builds both
-images, starts the stack, runs migrations, waits for the healthchecks, and runs
-`tests/e2e/smoke-test.py` against the containers; Docker has not been run in local development. See
-[`docs/operations/deployment.md`](docs/operations/deployment.md).
+- Services: `postgres` (16), `server` (`:8080`), `dashboard` (`:3000`), and a one-off `migrate`
+  service. Migrations never run implicitly on startup.
+- The server image builds with clang 19 on Debian trixie and includes Tesseract; the dashboard image
+  uses Next.js standalone output. Both run as non-root users and have `HEALTHCHECK`s (server:
+  `GET /ready`; dashboard: `GET /`).
+- `NEXT_PUBLIC_API_URL` is a build argument, so rebuild the dashboard image after changing it.
+- **Validation status:** the Compose stack is built, started, and smoke-tested in CI. It has not
+  been run in the local development environment, which does not have Docker.
 
-## Code quality
+## Security considerations
 
-```bash
-# C++ formatting (requires clang-format)
-find engine apps/server benchmarks -name '*.cpp' -o -name '*.hpp' | xargs clang-format -i
+Implemented protections:
 
-# Static analysis (requires clang-tidy)
-cmake -B build -G Ninja -DFLOWFORGE_ENABLE_CLANG_TIDY=ON && cmake --build build -j
-```
+- Parameterized SQL for every query; SQL-injection probe strings are stored as inert data
+- Row-level input validation, with server-side re-validation on confirm
+- Upload and payload limits: 2 MB CSV, 1,000 CSV rows, 6 MB image, 200 OCR rows, 8 MB HTTP body,
+  256 KB job payload
+- Image type detection by magic bytes (PNG, JPEG, WebP); corrupt images rejected
+- OCR subprocess launched with an argument vector (no shell) and a timeout
+- Exact-match CORS allowlist, never a wildcard
+- Malformed IDs rejected with `400` before any database access; generic messages on `5xx`
+- Non-root Docker containers; no secrets committed (`.env` is git-ignored)
 
-## CI
+> **Authentication and authorization are not currently implemented; FlowForge should be deployed
+> behind an appropriate trusted network boundary until identity and access control are added.**
 
-`.github/workflows/ci.yml` runs on every push to `master` and on pull requests (until the Phase 3H
-follow-up it only triggered on `main`, so it had never run): C++ build + test (Debug and Release),
-an ASan+UBSan test run, a dedicated PostgreSQL integration test job (spins up a `postgres:16`
-service container, validates the migration runner on a fresh database with
-`tests/integration/check-migrations.sh`, runs migrations, then runs the full test suite including
-the PostgreSQL-backed tests), `clang-format --dry-run`, dashboard lint/typecheck/build, and a Docker
-job that builds the images, starts the stack, and runs `tests/e2e/smoke-test.py` against it.
+## Known limitations
+
+- **No authentication or authorization.** Every endpoint is open to anyone who can reach it.
+- **OCR can produce values that are structurally valid but wrong** (`PRODS` for `PROD5`,
+  `personl@…` for `person1@…`). Review the preview before confirming; there is no minimum
+  confidence threshold.
+- **Single-process execution.** The scheduler, worker pool, and retry dispatcher run inside one
+  server process; there are no distributed workers or multi-instance job claiming.
+- **Deep category hierarchies in one submission** rely on retries. A chain deeper than the retry
+  budget (3 attempts by default) could, with worst-case timing, dead-letter at its deepest level;
+  importing level by level avoids this.
+- **Worker records accumulate:** each server start registers its worker threads, and records from
+  earlier runs are never removed.
+- **A job that succeeds on retry keeps the previous attempt's `last_error` text**; its status is
+  correct.
+- **Workflows, queue management, log querying, and settings editing have no backend.** Their
+  dashboard pages say so.
+- `/metrics` is plain text, not Prometheus exposition format.
+- **Docker has been validated in CI only**, not in local development.
 
 ## Roadmap
 
-**Phase 1 — done:** monorepo structure, CMake build system with warnings/sanitizers/
-clang-tidy support, domain model, `ThreadPool`/`BlockingQueue` concurrency primitives, typed
-config + structured logging + in-memory metrics, `IJobRepository`/`IWorkflowRepository`/
-`IWorkerRepository` interfaces with real in-memory implementations, `JobService` with full CRUD +
-validation, a real HTTP API (`/health`, `/ready`, `/metrics`, `/api/v1/jobs*`,
-`/api/v1/workflows`, `/api/v1/workers`), PostgreSQL schema + migration runner, Next.js dashboard
-shell wired to real endpoints where they exist, Docker/Compose, CI.
+- Authentication and authorization
+- Stronger OCR verification (confidence thresholds, per-field review)
+- Distributed workers and multi-instance job claiming
+- Workload filtering and search
+- Prometheus-format metrics and richer operational analytics
+- A documented cloud deployment
 
-**Phase 2A (this phase) — done:** `libpqxx`-backed `IJobRepository`/`IWorkflowRepository`/
-`IWorkerRepository` implementations, a real connection pool and transaction strategy, a
-config-driven repository factory/composition root (`persistence::create_repositories`) replacing
-the hardcoded in-memory construction in `App`, PostgreSQL-specific error mapping, PostgreSQL
-integration test suite (opt-in, real database, no mocks), a restart-persistence acceptance test,
-CI PostgreSQL service container, migration `0010` (`workflow_steps.position`), and updated
-documentation. In-memory repositories are kept for fast unit tests and as the
-development/test-mode default.
+## Documentation
 
-**Phase 2B-1 — done:** `IJobHandler` handler abstraction, `ExecutionContext`,
-`domain::ExecutionResult`, a thread-safe `HandlerRegistry` (explicitly constructed/injected, not a
-singleton), three real built-in handlers (`echo`, `delay` with a bounded/cancellable sleep,
-`transform`), `domain::Job::job_type()` (domain-only at the time — persistence/API added in
-Phase 2B-2 below), and full unit/concurrency test coverage. See
-[`docs/architecture/execution-model.md`](docs/architecture/execution-model.md).
+| Topic | Document |
+|---|---|
+| Architecture overview | [`docs/architecture/overview.md`](docs/architecture/overview.md) |
+| Execution model (scheduler, worker pool, retries, metrics) | [`docs/architecture/execution-model.md`](docs/architecture/execution-model.md) |
+| Workload model | [`docs/architecture/workload-model.md`](docs/architecture/workload-model.md) |
+| Input processing (CSV, OCR, preview/confirm) | [`docs/architecture/input-processing.md`](docs/architecture/input-processing.md) |
+| User import | [`docs/architecture/user-import.md`](docs/architecture/user-import.md) |
+| Product processing | [`docs/architecture/product-processing.md`](docs/architecture/product-processing.md) |
+| Category processing | [`docs/architecture/category-processing.md`](docs/architecture/category-processing.md) |
+| API reference | [`docs/api/reference.md`](docs/api/reference.md) |
+| Developer setup | [`docs/development/getting-started.md`](docs/development/getting-started.md) |
+| Deployment | [`docs/operations/deployment.md`](docs/operations/deployment.md) |
+| Backup and recovery | [`docs/operations/backup-and-recovery.md`](docs/operations/backup-and-recovery.md) |
+| Release checklist | [`docs/operations/release-checklist.md`](docs/operations/release-checklist.md) |
+| Production-readiness report | [`docs/architecture/phase-3h-production-readiness.md`](docs/architecture/phase-3h-production-readiness.md) |
+| Demo guide | [`docs/demo.md`](docs/demo.md) |
 
-**Phase 2B-2 — done:** `engine::PriorityScheduler` (a real `IScheduler`
-implementation) — bounded priority-ordered dispatch queue (`PriorityBlockingQueue`, FIFO
-tie-break), clean start/stop lifecycle, backpressure (`ErrorCode::Conflict` at capacity),
-`HandlerRegistry`-backed validation/dispatch, scheduler metrics/logging, `job_type` persisted
-end-to-end (migration `0011`, `CreateJobRequest`, HTTP API, both repository backends),
-`POST /api/v1/jobs` submits to the real Scheduler when `job_type` is set, dashboard shows job
-type/priority. See [`docs/architecture/execution-model.md`](docs/architecture/execution-model.md)
-§7–§9.
+## Why FlowForge
 
-**Phase 2B-3 (this phase) — done:** `engine::LocalWorkerPool` (a real `IWorkerPool`
-implementation, built on `BlockingQueue`/`ThreadPool`) and `engine::JobExecutor` (a real
-`IExecutor` implementation) complete the execution path. A job dispatched by the Scheduler is
-genuinely executed: `Queued -> Running -> Succeeded`/`Failed`/`Cancelled`, resolved through
-`HandlerRegistry`/`IJobHandler` (never a job-type switch statement), with a real `job_attempts`
-row persisted per attempt (`InMemoryExecutionRepository`/`PostgresExecutionRepository`
-implementing the existing `engine::IExecutionManager` — no new migration needed) and one real,
-persisted `domain::Worker` row per local worker thread. Cooperative cancellation (a queued job
-never executes once cancelled; a running `DelayHandler` job observes cancellation and stops) and a
-cooperative per-attempt timeout are both real — neither ever forcibly terminates a thread.
-Additive `GET /api/v1/jobs/{id}/attempts` endpoint; dashboard shows real execution attempt
-history (worker, outcome, duration, error). Comprehensive lifecycle/execution/cancellation/
-timeout/concurrency test coverage, plus a real local end-to-end verification run (C++ backend +
-PostgreSQL + Next.js dashboard: a real `echo` job created through the API genuinely reaches
-`Succeeded`). See execution-model.md §10–§17.
+FlowForge is interesting as an engineering project because the parts that are usually mocked are real:
 
-**Phase 2B-4 — done:** retry engine. `JobExecutor` now classifies a failed attempt as retryable or
-not via `domain::ExecutionResult::retryable()` (a Phase 2B-1 hint nothing previously consumed),
-landing on `Retrying`/`DeadLetter` (via the existing `Job::record_attempt_failure()`) or a
-permanent `Failed` accordingly. `engine::RetryDispatcher` is the new component that actually acts
-on a `Retrying` job: poll-based (not a fragile in-memory timer) and therefore restart-safe by
-construction, re-submitting through the same `IScheduler` a fresh job uses once
-`RetryPolicy::compute_backoff()` says the backoff has elapsed. Real PostgreSQL acceptance tests
-cover retry-then-succeed and permanently-fails-to-DeadLetter, plus a live demonstration against
-the running server. See execution-model.md §18–§19.
+- Jobs run on a **concurrent C++ engine** with bounded queues, explicit backpressure, and cooperative
+  cancellation, not a loop over a list.
+- **Workloads are orchestrated end to end**: one submission becomes one workload and N jobs, with
+  progress derived from job state rather than a counter that can drift.
+- **Failures are first-class**: retry policies, a restart-safe retry dispatcher, dead letters, and a
+  persisted history of every attempt.
+- **Data lands in PostgreSQL** through a repository abstraction, a connection pool, and versioned
+  migrations that CI validates.
+- **OCR ingestion** feeds the same pipeline as CSV, behind a provider abstraction.
+- The **processing architecture is domain-agnostic**: Users, Products, and Categories share one
+  extraction and workload path and differ only in small mapping and handler classes.
+- A **full-stack dashboard** shows live progress, attempts, and readiness.
+- It is **verified end to end**: 654 backend tests, 100-record acceptance tests against PostgreSQL
+  and real OCR, a Docker runtime smoke test in CI, and recorded browser verification.
 
-**Phase 2B-5 (this phase) — done:** production observability and operational reliability.
-`GET /ready` now performs real, cheap, non-blocking checks against PostgreSQL (via
-`PgConnectionPool::is_available()`), the scheduler, the worker pool, and the retry dispatcher, and
-returns `503` — never a lying `200` — the moment any of them is unavailable; `GET /health` stays a
-pure liveness check, deliberately independent of all of that. A monotonic (`steady_clock`, not
-wall-clock) execution-duration histogram now backs `flowforge_executor_execution_duration_ms`, and
-a small, coherent metrics vocabulary was added across jobs/scheduler/worker-pool/executor/retry/
-database (backpressure rejections, retrying vs. dead-lettered vs. permanently-failed vs.
-timed-out attempts, connection-pool leased/size gauges) — see execution-model.md §20 for the full
-list and the naming convention. Every 5xx HTTP error now returns a fixed, generic message instead
-of ever echoing a raw exception string to a client. Startup-failure cleanup (an unreachable
-PostgreSQL leaves no leaked thread or connection) and graceful-shutdown ordering are both now
-covered by dedicated tests, not just asserted in comments.
+## Project context
 
-**Phase 3A — done:** the Workload model. `domain::Workload`/`services::WorkloadService`,
-`jobs.workload_id` (migration 0013), `POST /api/v1/workloads` (one Job per item, created-then-
-scheduled exactly like `POST /api/v1/jobs`), live-computed progress
-(queued/running/completed/failed) derived from child jobs on every read — never a persisted,
-driftable counter. See [`docs/architecture/workload-model.md`](docs/architecture/workload-model.md).
+Built as a full-stack systems engineering project demonstrating concurrent C++ backend design,
+PostgreSQL persistence, workload orchestration, input processing, reliability engineering, and
+modern web application development.
 
-**Phase 3B — done:** bulk User import. `POST /api/v1/workloads/user-imports` (CSV upload → one
-workload, one `user.process` job per valid row), strict CSV parsing/validation, paginated
-per-item results (`GET /api/v1/workloads/{id}/items`). See
-[`docs/architecture/user-import.md`](docs/architecture/user-import.md).
-
-**Phase 3C/3D — done:** the source-/target-agnostic Processing Center. `POST /api/v1/process`
-generalizes bulk import beyond Users+CSV; `POST /api/v1/process/preview` +
-`POST /api/v1/process/confirm` add an explicit review step (extraction creates nothing; only
-confirmation does) and image/screenshot-via-OCR as a real second input source alongside CSV. See
-[`docs/architecture/input-processing.md`](docs/architecture/input-processing.md).
-
-**Phase 3E/3F — done:** Products and Categories as real, persisted, dedicated domains —
-`handlers::ProductProcessHandler`/`CategoryProcessHandler` upsert into their own tables,
-with paginated read APIs (`GET /api/v1/products`, `GET /api/v1/categories`, both with `total`) and
-dashboard list pages. See
-[`docs/architecture/product-processing.md`](docs/architecture/product-processing.md) /
-[`docs/architecture/category-processing.md`](docs/architecture/category-processing.md).
-
-**Phase 3G (this phase) — done:** platform unification and hardening, driven by an explicit
-audit-first pass rather than new features. Closed: no `/workloads` browse page existed despite the
-API supporting it; a job's own JSON never exposed its `workload_id` (so a job page couldn't link
-back to its workload); `GET /api/v1/jobs`/`GET /api/v1/workloads` had no `total`, blocking real
-pagination UI; workload-level progress collapsed `retrying`→queued and `dead_letter`→failed into
-their parent buckets with no visible sub-count. Added: a `/health` dashboard page over the
-already-real `GET /ready`; a dashboard home showing real workload/job counts instead of a bare
-reachability dot; Docker `HEALTHCHECK`s for the server and dashboard images; consistent
-loading/empty/error+retry handling across list pages; an explicit "View Workload / View Jobs /
-Return to Processing Center" path after a successful submission instead of a dead-end success
-message. See [`docs/architecture/phase-3g-audit.md`](docs/architecture/phase-3g-audit.md) for the
-full gap analysis this phase worked from.
-
-**Phase 3H (this phase) — done:** production readiness and final validation. Closed the last
-domain-persistence gap: Users gained a dedicated `users` table, repository, and
-`GET /api/v1/users` read API, mirroring Products/Categories exactly (`handlers::UserProcessHandler`
-now upserts instead of only validating/normalizing). Added real 100+ record automated acceptance
-coverage against a real PostgreSQL database for all three domains across both CSV and real-OCR
-image sources (six new/extended `ProcessRoutesBulkPostgresTest` cases). Found and fixed a real bug
-in `scripts/db-migrate.ps1` that silently reported success on every migration while applying none
-of them against a genuinely fresh Windows database — verified via real fresh-database and
-incremental-upgrade runs afterward. Ran a focused security probe battery (malformed input, SQL
-injection strings, oversized payloads, path traversal, corrupt uploads) against a live server;
-found one non-critical API-contract issue (a malformed ID returns 500 instead of 400), since
-fixed in the follow-up pass. Measured a real performance baseline (100
-and 500-record CSV flows, 100-record OCR flows) with no unsupported scalability claims. Added
-`docs/operations/{deployment,backup-and-recovery,release-checklist}.md`. Explicitly documented,
-rather than silently ignored: no authentication/authorization exists. The follow-up pass fixed CI's
-branch trigger (it had never run), a same-submission category-hierarchy race, silently collapsed
-in-submission duplicate keys, the malformed-ID 500, and five Docker defects, and browser-verified
-all six source × target flows. See
-[`docs/architecture/phase-3h-production-readiness.md`](docs/architecture/phase-3h-production-readiness.md)
-for the complete report.
-
-**Next phase — workflow DAG execution, stronger cancellation/timeout, more observability:**
-- Workflow execution: DAG validation (cycle detection), step sequencing, a real create-workflow
-  path (today `workflows`/`workflow_steps` are schema-and-read-only).
-- Stronger cancellation/timeout semantics beyond cooperative-only signaling, if a real need for
-  them emerges (e.g. a supervisory process that can restart a stuck worker).
-- Distributed/multi-process worker coordination (`LocalWorkerPool` is in-process/local only) and
-  distributed retry dispatching (today's `RetryDispatcher` is single-process only).
-- Worker process registration/heartbeating as a real standalone deployable (`services/workers/`).
-- An operator-triggered "retry now" / replay endpoint for a `DeadLetter` job (today the only way
-  back from `DeadLetter` is direct database access).
-- A real Prometheus exposition format for `/metrics` (today's plain `name value` text lines are a
-  deliberately simple placeholder — see execution-model.md §20.1).
-
-**Later phases:** API authentication/authorization, rate limiting, distributed job claiming across
-multiple server instances (`SELECT ... FOR UPDATE SKIP LOCKED`), load/stress testing harness,
-audit log UI, log aggregation, request-latency histograms (see execution-model.md §20.1 for why
-this was deferred this phase specifically).
+The development history, including the defects found through validation and how they were fixed,
+is recorded in the [production-readiness report](docs/architecture/phase-3h-production-readiness.md)
+and the [Phase 3G audit](docs/architecture/phase-3g-audit.md).

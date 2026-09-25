@@ -51,7 +51,7 @@ export default function WorkloadsPage() {
     <div>
       <PageHeader
         title="Workloads"
-        description="Every workload created from the Processing Center or a user import -- a logical grouping of jobs submitted as one unit. Progress, retry, and dead-letter counts are computed live from each workload's child jobs, never cached."
+        description="Every workload created from the Processing Center or a user import: a group of jobs submitted together. Progress, retry, and dead-letter counts are computed from each workload's jobs on every read."
         action={
           <Link
             href="/processing"

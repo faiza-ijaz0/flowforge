@@ -61,7 +61,7 @@ export default function ProductsPage() {
     <div>
       <PageHeader
         title="Products"
-        description="Real, persisted product records. Every row here was written by handlers::ProductProcessHandler when its product.process job executed -- see docs/architecture/product-processing.md. Import more via the Processing Center."
+        description="Products saved by completed product import jobs. Import more from the Processing Center."
         action={
           <Link
             href="/processing"

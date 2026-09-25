@@ -6,7 +6,7 @@ export default function HealthPage() {
     <div>
       <PageHeader
         title="System health"
-        description="Real, live readiness state from GET /ready -- database, scheduler, worker pool, and retry dispatcher. No secrets, environment variables, or credentials are shown here."
+        description="Live readiness of the server's dependencies: database, scheduler, worker pool, and retry dispatcher. No secrets or configuration values are shown."
       />
       <HealthPanel />
     </div>

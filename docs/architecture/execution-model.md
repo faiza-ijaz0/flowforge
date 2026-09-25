@@ -381,9 +381,14 @@ the small id-tracking sets used for cancellation, and the queue's own mutex is s
 job, and a request without `"job_type"` behaves exactly as before (`status` stays `"pending"`,
 response shape unchanged apart from the new additive fields below). Phase 2B-2 adds one additive
 behavior (`apps/server/src/http/routes/job_routes.cpp`): if the request body includes a non-empty
-`"job_type"`, the route also calls `scheduler->schedule()` on the newly-created job and, only on
-success, calls the new `JobService::mark_queued()` (`Pending -> Queued`, persisted) so the
-returned/subsequently-fetched job reflects it. A scheduling failure (unknown `job_type`, scheduler
+`"job_type"`, the route also persists `Pending -> Queued` via `JobService::mark_queued()` and then
+calls `scheduler->schedule()`; if the scheduler rejects the job, `JobService::revert_queued()`
+writes the original `Pending` row back. **The order matters (Phase 3I fix):** it was originally
+schedule-then-mark, and because `mark_queued()` is a read-modify-write of the whole row, a worker
+could finish the job between that read and write, and the late `Queued` write then overwrote the
+job's `Succeeded` row. The Phase 3I release test run caught this as a 100-record workload stuck at
+94/95 completed with one job `queued` at attempt 0 while its `job_attempts` row showed a successful
+attempt. Persisting `Queued` before the job is visible to any worker removes the window. A scheduling failure (unknown `job_type`, scheduler
 at capacity) **never fails the HTTP request** -- the job record was genuinely created either way
 -- it is reported via an additive `"scheduling": {"scheduled": bool, "reason"?: string}` object in
 the response body instead. This deliberate design keeps "was this job record created" (always a
@@ -692,12 +697,13 @@ does not lose a pending retry -- the next process's own `RetryDispatcher` picks 
 `Retrying` row back up from PostgreSQL on its very first poll tick, since eligibility is computed
 from persisted state alone.
 
-Re-submission mirrors the existing `POST /api/v1/jobs` -> `IScheduler::schedule()` ->
-`JobService::mark_queued()` ordering (`apps/server/src/http/routes/job_routes.cpp`): the job is
-handed to `scheduler->schedule()` **before** its `Retrying -> Queued` transition is persisted. A
-`schedule()` rejection (scheduler at capacity or not running) therefore never leaves a job stuck
-claiming a state it never reached -- it simply stays `Retrying`, and a later poll tick retries the
-dispatch itself. This doubles as automatic recovery from transient scheduler backpressure, which
+Re-submission persists the `Retrying -> Queued` transition **before** handing the job to
+`scheduler->schedule()` (Phase 3I fix; this was originally the other way round). Scheduling first
+let a worker finish the retry before the `Queued` write landed, and that write then overwrote the
+retry's outcome, the same lost-update race described in §8 for `POST /api/v1/jobs`. A `schedule()`
+rejection (scheduler at capacity or not running) writes the original `Retrying` row back unchanged,
+including its `updated_at`, so the job never claims a state it did not reach and its backoff is not
+reset; a later poll tick retries the dispatch itself. This doubles as automatic recovery from transient scheduler backpressure, which
 a job's very first `schedule()` call does not get (see §10.6's documented, still-true limitation
 for that case).
 

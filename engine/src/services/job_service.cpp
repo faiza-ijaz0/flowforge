@@ -121,6 +121,16 @@ Result<domain::Job> JobService::cancel_job(const std::string& id) {
   return job;
 }
 
+Result<void> JobService::revert_queued(const domain::Job& previous) {
+  auto restored = repository_->update(previous);
+  if (!restored) {
+    logger_->error("job_service", "failed to revert job after scheduler rejection",
+                   {{.key = "job_id", .value = previous.id().value()},
+                    {.key = "error", .value = restored.error().message()}});
+  }
+  return restored;
+}
+
 Result<domain::Job> JobService::mark_queued(const std::string& id) {
   auto found = repository_->find_by_id(infra::JobId{id});
   if (!found) {

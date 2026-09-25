@@ -62,13 +62,20 @@ class JobService {
   /// /api/v1/jobs` can report a `total` the same way those endpoints do.
   [[nodiscard]] Result<std::size_t> count_jobs() const;
 
-  /// Transitions a job from Pending to Queued and persists it. Called by
-  /// the HTTP layer after engine::IScheduler::schedule() accepts a
-  /// newly-created job (see apps/server/src/http/routes/job_routes.cpp)
-  /// -- JobService has no dependency on the Scheduler/HandlerRegistry
-  /// itself, it only records the resulting state. Fails with
-  /// ErrorCode::Conflict if the job is already in a terminal state.
+  /// Transitions a job from Pending to Queued and persists it. Callers
+  /// (job_routes.cpp, WorkloadService) must call this *before*
+  /// engine::IScheduler::schedule(), never after: once scheduled, a worker
+  /// can execute the job and persist Succeeded at any moment, and a
+  /// Queued write landing after that would overwrite the finished job
+  /// (a real lost-update race, found by the Phase 3I release run). If
+  /// schedule() then rejects the job, undo with revert_queued(). Fails
+  /// with ErrorCode::Conflict if the job is already in a terminal state.
   [[nodiscard]] Result<domain::Job> mark_queued(const std::string& id);
+
+  /// Restores `previous` (the job as it was before mark_queued()) after
+  /// the scheduler rejected it. Safe only because a rejected job never
+  /// reached a worker, so nothing else can have changed its row.
+  [[nodiscard]] Result<void> revert_queued(const domain::Job& previous);
 
  private:
   std::shared_ptr<persistence::IJobRepository> repository_;

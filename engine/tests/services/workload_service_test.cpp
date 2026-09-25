@@ -2,7 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <mutex>
 #include <tuple>
+#include <vector>
 
 #include "flowforge/engine/priority_scheduler.hpp"
 #include "flowforge/handlers/builtin_handlers.hpp"
@@ -83,6 +85,75 @@ TEST_F(WorkloadServiceTest, CreateWorkloadCreatesAndAssociatesJobs) {
     // synchronously, before create_workload() returns.
     EXPECT_EQ(job.status(), domain::JobStatus::Queued);
   }
+}
+
+/// Records the *persisted* status of each job at the instant schedule() is
+/// called -- the moment the job becomes visible to workers. Optionally
+/// rejects every job.
+class StatusProbeScheduler final : public engine::IScheduler {
+ public:
+  explicit StatusProbeScheduler(std::shared_ptr<persistence::IJobRepository> jobs, bool reject)
+      : jobs_(std::move(jobs)), reject_(reject) {}
+
+  Result<void> schedule(const domain::Job& job) override {
+    auto persisted = jobs_->find_by_id(job.id());
+    std::lock_guard lock(mutex_);
+    statuses_.push_back(persisted ? persisted->status() : domain::JobStatus::Pending);
+    if (reject_) {
+      return std::unexpected(make_error(ErrorCode::Conflict, "probe scheduler rejects"));
+    }
+    return {};
+  }
+  Result<void> cancel(const infra::JobId& /*job_id*/) override { return {}; }
+
+  [[nodiscard]] std::vector<domain::JobStatus> statuses() const {
+    std::lock_guard lock(mutex_);
+    return statuses_;
+  }
+
+ private:
+  std::shared_ptr<persistence::IJobRepository> jobs_;
+  bool reject_;
+  mutable std::mutex mutex_;
+  std::vector<domain::JobStatus> statuses_;
+};
+
+// Phase 3I regression: Queued must already be persisted when a job becomes
+// visible to workers. The old order (schedule, then mark Queued) let a
+// worker finish the job first and then had the Queued write overwrite its
+// Succeeded row, leaving the workload "running" forever.
+TEST_F(WorkloadServiceTest, JobIsPersistedAsQueuedBeforeItIsHandedToTheScheduler) {
+  auto probe = std::make_shared<StatusProbeScheduler>(job_repository, /*reject=*/false);
+  WorkloadService probed(workload_repository, job_repository, job_service, probe, clock, logger, metrics);
+
+  CreateWorkloadRequest request{.type = "user.process",
+                                .items = {{R"({"name":"Alice","email":"alice@example.com"})"},
+                                          {R"({"name":"Bob","email":"bob@example.com"})"}}};
+  auto result = probed.create_workload(request);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+
+  const auto seen = probe->statuses();
+  ASSERT_EQ(seen.size(), 2u);
+  for (const auto status : seen) {
+    EXPECT_EQ(status, domain::JobStatus::Queued);
+  }
+}
+
+TEST_F(WorkloadServiceTest, SchedulerRejectionRestoresThePendingJob) {
+  auto probe = std::make_shared<StatusProbeScheduler>(job_repository, /*reject=*/true);
+  WorkloadService probed(workload_repository, job_repository, job_service, probe, clock, logger, metrics);
+
+  CreateWorkloadRequest request{.type = "user.process",
+                                .items = {{R"({"name":"Alice","email":"alice@example.com"})"}}};
+  auto result = probed.create_workload(request);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  ASSERT_EQ(result->items.size(), 1u);
+  EXPECT_FALSE(result->items[0].scheduled);
+  EXPECT_TRUE(result->items[0].reason.has_value());
+
+  auto job = job_repository->find_by_id(result->items[0].job_id);
+  ASSERT_TRUE(job.has_value());
+  EXPECT_EQ(job->status(), domain::JobStatus::Pending);
 }
 
 TEST_F(WorkloadServiceTest, CreateWorkloadWithZeroItemsIsImmediatelySucceeded) {

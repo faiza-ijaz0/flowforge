@@ -86,16 +86,16 @@ void register_job_routes(httplib::Server& server, const std::shared_ptr<services
         domain::Job result_job = *created;
         nlohmann::json scheduling{{"scheduled", false}};
         if (!result_job.job_type().empty()) {
-          auto scheduled = scheduler->schedule(result_job);
-          if (scheduled) {
-            auto queued = job_service->mark_queued(result_job.id().value());
-            if (queued) {
-              result_job = *queued;
-              scheduling = {{"scheduled", true}};
-            } else {
-              scheduling = {{"scheduled", false}, {"reason", queued.error().message()}};
-            }
+          // Queued is persisted before schedule(), never after -- see
+          // JobService::mark_queued for the lost-update race this avoids.
+          auto queued = job_service->mark_queued(result_job.id().value());
+          if (!queued) {
+            scheduling = {{"scheduled", false}, {"reason", queued.error().message()}};
+          } else if (auto scheduled = scheduler->schedule(*queued); scheduled) {
+            result_job = *queued;
+            scheduling = {{"scheduled", true}};
           } else {
+            std::ignore = job_service->revert_queued(result_job);
             scheduling = {{"scheduled", false}, {"reason", scheduled.error().message()}};
           }
         }

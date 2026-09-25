@@ -123,8 +123,24 @@ Result<std::size_t> RetryDispatcher::poll_once() {
       continue;  // Gone, or raced to a different status (e.g. Cancelled).
     }
 
-    auto scheduled = scheduler_->schedule(*fresh);
+    // Persist Retrying -> Queued *before* scheduling: once schedule()
+    // accepts the job a worker may finish the retry immediately, and a
+    // Queued write landing afterwards would overwrite that outcome
+    // (see JobService::mark_queued). On rejection the original Retrying
+    // row -- including its updated_at, so the backoff is unchanged -- is
+    // written back.
+    domain::Job queued = *fresh;
+    queued.transition_to(domain::JobStatus::Queued, now);
+    if (auto updated = job_repository_->update(queued); !updated) {
+      logger_->error(kComponent, "failed to persist Retrying -> Queued transition before scheduling",
+                     {{.key = "job_id", .value = queued.id().value()},
+                      {.key = "error", .value = updated.error().message()}});
+      continue;
+    }
+
+    auto scheduled = scheduler_->schedule(queued);
     if (!scheduled) {
+      std::ignore = job_repository_->update(*fresh);
       // Scheduler at capacity / not running / handler no longer resolvable
       // -- leave the job Retrying so a later poll tick retries the
       // dispatch itself; nothing is lost. Mirrors the existing, documented
@@ -136,15 +152,6 @@ Result<std::size_t> RetryDispatcher::poll_once() {
       if (metrics_) {
         metrics_->increment_counter("flowforge_retry_dispatcher_deferred_total");
       }
-      continue;
-    }
-
-    domain::Job queued = *fresh;
-    queued.transition_to(domain::JobStatus::Queued, now);
-    if (auto updated = job_repository_->update(queued); !updated) {
-      logger_->error(kComponent, "failed to persist Retrying -> Queued transition after scheduling",
-                     {{.key = "job_id", .value = queued.id().value()},
-                      {.key = "error", .value = updated.error().message()}});
       continue;
     }
 

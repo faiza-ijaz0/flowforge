@@ -60,6 +60,31 @@ class FakeScheduler final : public IScheduler {
   std::vector<std::string> scheduled_ids_;
 };
 
+/// Records the persisted status of each job at the instant schedule() is
+/// called (see the WorkloadService equivalent in workload_service_test.cpp).
+class StatusProbeScheduler final : public IScheduler {
+ public:
+  explicit StatusProbeScheduler(std::shared_ptr<persistence::IJobRepository> jobs) : jobs_(std::move(jobs)) {}
+
+  Result<void> schedule(const domain::Job& job) override {
+    auto persisted = jobs_->find_by_id(job.id());
+    std::lock_guard lock(mutex_);
+    statuses_.push_back(persisted ? persisted->status() : domain::JobStatus::Pending);
+    return {};
+  }
+  Result<void> cancel(const infra::JobId& /*job_id*/) override { return {}; }
+
+  [[nodiscard]] std::vector<domain::JobStatus> statuses() const {
+    std::lock_guard lock(mutex_);
+    return statuses_;
+  }
+
+ private:
+  std::shared_ptr<persistence::IJobRepository> jobs_;
+  mutable std::mutex mutex_;
+  std::vector<domain::JobStatus> statuses_;
+};
+
 class RetryDispatcherTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -83,6 +108,43 @@ class RetryDispatcherTest : public ::testing::Test {
   std::shared_ptr<FakeScheduler> fake_scheduler;
   std::shared_ptr<infra::ManualClock> clock;
 };
+
+// Phase 3I regression: the Retrying -> Queued transition must be persisted
+// before the retry is scheduled. Otherwise a worker can finish the retry
+// first and the late Queued write overwrites its outcome.
+TEST_F(RetryDispatcherTest, RetryIsPersistedAsQueuedBeforeItIsScheduled) {
+  const auto job = make_retrying_job();
+  clock->advance(std::chrono::hours(1));
+
+  auto probe = std::make_shared<StatusProbeScheduler>(job_repo);
+  RetryDispatcher dispatcher(job_repo, probe, clock, RetryDispatcherConfig{}, silent_logger());
+  auto result = dispatcher.poll_once();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, 1u);
+
+  const auto seen = probe->statuses();
+  ASSERT_EQ(seen.size(), 1u);
+  EXPECT_EQ(seen[0], domain::JobStatus::Queued);
+}
+
+TEST_F(RetryDispatcherTest, RejectedRetryRestoresTheOriginalRetryingRow) {
+  const auto job = make_retrying_job();
+  const auto original = job_repo->find_by_id(job.id());
+  ASSERT_TRUE(original.has_value());
+  clock->advance(std::chrono::hours(1));
+  fake_scheduler->set_reject(true);
+
+  auto dispatcher = make_dispatcher();
+  auto result = dispatcher->poll_once();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, 0u);
+
+  auto after = job_repo->find_by_id(job.id());
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ(after->status(), domain::JobStatus::Retrying);
+  // updated_at unchanged, so the retry's backoff is not reset.
+  EXPECT_EQ(after->updated_at(), original->updated_at());
+}
 
 TEST_F(RetryDispatcherTest, DoesNotScheduleJobsInOtherStatuses) {
   domain::Job queued(infra::JobId::generate(), "q", "hello", domain::RetryPolicy{}, clock->now(), 0, "flaky");

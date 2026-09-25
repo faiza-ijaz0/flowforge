@@ -1,5 +1,7 @@
 #include "flowforge/services/workload_service.hpp"
 
+#include <tuple>
+
 namespace flowforge::services {
 
 namespace {
@@ -101,15 +103,16 @@ Result<CreateWorkloadResult> WorkloadService::create_workload(const CreateWorklo
     }
 
     WorkloadItemDispatchOutcome outcome{.job_id = created->id(), .scheduled = false, .reason = std::nullopt};
-    auto scheduled = scheduler_->schedule(*created);
-    if (scheduled) {
-      auto queued = job_service_->mark_queued(created->id().value());
-      if (queued) {
-        outcome.scheduled = true;
-      } else {
-        outcome.reason = queued.error().message();
-      }
+    // Persist Queued *before* scheduling: once schedule() accepts the job
+    // a worker may finish it immediately, and a later Queued write would
+    // overwrite its Succeeded/Failed row (see JobService::mark_queued).
+    auto queued = job_service_->mark_queued(created->id().value());
+    if (!queued) {
+      outcome.reason = queued.error().message();
+    } else if (auto scheduled = scheduler_->schedule(*queued); scheduled) {
+      outcome.scheduled = true;
     } else {
+      std::ignore = job_service_->revert_queued(*created);
       outcome.reason = scheduled.error().message();
     }
     if (metrics_) {

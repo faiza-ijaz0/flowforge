@@ -133,9 +133,11 @@ would need that mapping added explicitly then, not preemptively now.
    payload <= 64 KiB -- see §6 for where these numbers come from).
 2. Persists the `Workload` row (`total_items = items.size()`).
 3. For each item: builds a `Job` (`job_type = type`, `payload = item.payload`,
-   `workload_id = <new workload's id>`) via `JobService::create_job`, then attempts
-   `IScheduler::schedule()` and, on success, `JobService::mark_queued()` -- **the exact
-   create-then-schedule sequence `POST /api/v1/jobs` already performs**
+   `workload_id = <new workload's id>`) via `JobService::create_job`, persists `Queued` via
+   `JobService::mark_queued()`, then calls `IScheduler::schedule()`, reverting to `Pending` if the
+   scheduler rejects the job -- **the same sequence `POST /api/v1/jobs` performs**. Queued is
+   written before scheduling so a fast worker's `Succeeded` can never be overwritten by a late
+   `Queued` write (a real race fixed in Phase 3I; see execution-model.md §8)
    (`apps/server/src/http/routes/job_routes.cpp`), applied once per item. A per-item failure (bad
    payload, unknown `job_type`, scheduler at capacity) is reported in that item's dispatch outcome
    and never aborts the loop or fails the whole call -- see "Partial failure during dispatch" below.

@@ -48,6 +48,12 @@ contradicted claims made in this document.
   installed in this development environment, so none of this has been run locally.** It first runs
   on the first CI run on `master` after this commit; that outcome is not recorded in this document
   because it postdates it.
+- **CI result:** the first run after the trigger fix (run `36030301097`, on `5d31a22`) failed on
+  the compiler toolchain (defect #13). After that fix, run `36032434131` on `732eefe` passed **all
+  7 jobs**: C++ build + test (Debug, Release), ASan + UBSan, PostgreSQL integration (including
+  the fresh-database migration check), clang-format, dashboard lint/typecheck/build, and Docker
+  build + runtime smoke test (images built, stack started with migrations, healthchecks passed,
+  smoke test with real OCR passed against the containers). Docker still has not been run locally.
 - **All six flows browser-verified** (§0.3) — the first pass verified only the three CSV flows.
 
 ### 0.3 Browser verification (follow-up)
